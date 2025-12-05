@@ -62,20 +62,18 @@ delete_creds() {
     local provider="${1:-}" username="${2:-}"
     escape_sql() { printf '%s' "$1" | sed "s/'/''/g"; }
     if [ -z "$username" ]; then
-        sqlite3 "$DB_PATH" "DELETE FROM creds WHERE provider = '$(escape_sql "$provider")';"
         local changes
-        changes=$(sqlite3 "$DB_PATH" "SELECT changes();")
-        if [ "$changes" -gt 0 ]; then
+        changes=$(sqlite3 "$DB_PATH" "DELETE FROM creds WHERE provider = '$(escape_sql "$provider")'; SELECT changes();")
+        if [ -n "$changes" ] && [ "$changes" -gt 0 ]; then
             echo "Credentials deleted for provider $provider (deleted $changes entries)"
         else
             echo "Error: No matching credentials for provider '$provider'" >&2
             exit 1
         fi
     else
-        sqlite3 "$DB_PATH" "DELETE FROM creds WHERE provider = '$(escape_sql "$provider")' AND username = '$(escape_sql "$username")';"
         local changes
-        changes=$(sqlite3 "$DB_PATH" "SELECT changes();")
-        if [ "$changes" -gt 0 ]; then
+        changes=$(sqlite3 "$DB_PATH" "DELETE FROM creds WHERE provider = '$(escape_sql "$provider")' AND username = '$(escape_sql "$username")'; SELECT changes();")
+        if [ -n "$changes" ] && [ "$changes" -gt 0 ]; then
             echo "Credentials deleted for $username@$provider"
         else
             echo "Error: No matching credentials for $username@$provider" >&2
