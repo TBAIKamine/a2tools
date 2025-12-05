@@ -45,21 +45,21 @@ validate_provider() {
 
 # DB helpers and CRUD operations
 add_creds() {
-    local provider="$1" username="$2" api_key="$3"
+    local provider="${1:-}" username="${2:-}" api_key="${3:-}"
     escape_sql() { printf '%s' "$1" | sed "s/'/''/g"; }
     sqlite3 "$DB_PATH" "INSERT INTO creds (username, key, provider) VALUES ('$(escape_sql "$username")', '$(escape_sql "$api_key")', '$(escape_sql "$provider")');"
-    [ $? -eq 0 ] && echo "Credentials added for $username@$provider" || { echo "Error: Failed to add credentials" >&2; exit 1; }
+    [ $? -eq 0 ] && echo "Credentials added for $username in $provider" || { echo "Error: Failed to add credentials" >&2; exit 1; }
 }
 
 update_creds() {
-    local provider="$1" username="$2" api_key="$3"
+    local provider="${1:-}" username="${2:-}" api_key="${3:-}"
     escape_sql() { printf '%s' "$1" | sed "s/'/''/g"; }
     sqlite3 "$DB_PATH" "UPDATE creds SET key = '$(escape_sql "$api_key")' WHERE provider = '$(escape_sql "$provider")' AND username = '$(escape_sql "$username")';"
     [ $(sqlite3 "$DB_PATH" "SELECT changes();") -gt 0 ] && echo "Credentials updated for $username@$provider" || { echo "Error: No matching credentials" >&2; exit 1; }
 }
 
 delete_creds() {
-    local provider="$1" username="$2"
+    local provider="${1:-}" username="${2:-}"
     escape_sql() { printf '%s' "$1" | sed "s/'/''/g"; }
     if [ -z "$username" ]; then
         sqlite3 "$DB_PATH" "DELETE FROM creds WHERE provider = '$(escape_sql "$provider")';"
@@ -150,7 +150,7 @@ case "$ACTION" in
         while [ $# -gt 0 ]; do
             case "$1" in
                 -p) [ $# -lt 2 ] && { echo "Error: -p requires argument" >&2; usage; }
-                    API_KEY="$2"; shift 2 ;;
+                    API_KEY="${2:-}"; shift 2 ;;
                 *)  [ -n "$USERNAME" ] && { echo "Error: Unexpected '$1'" >&2; usage; }
                     USERNAME="$1"; shift ;;
             esac
@@ -166,7 +166,7 @@ case "$ACTION" in
         ;;
     delete)
         [ $# -lt 1 ] && { echo "Error: PROVIDER required" >&2; usage; }
-        PROVIDER="$1" USERNAME="$2"
+        PROVIDER="$1" USERNAME="${2:-}"
         if ! validate_provider "$PROVIDER"; then
             echo "Error: Invalid provider '$PROVIDER'. Valid: ${VALID_PROVIDERS[*]}" >&2
             exit 1
