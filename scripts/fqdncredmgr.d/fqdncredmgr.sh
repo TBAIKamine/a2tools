@@ -154,8 +154,16 @@ case "$ACTION" in
             esac
         done
         [ -z "$USERNAME" ] && { echo "Error: USERNAME required" >&2; usage; }
-        [ -z "$API_KEY" ] && API_KEY=$(prompt_api_key)
         init_db
+        if [ "$ACTION" = "update" ]; then
+            escape_sql_local() { printf '%s' "$1" | sed "s/'/''/g"; }
+            exists=$(sqlite3 "$DB_PATH" "SELECT COUNT(1) FROM creds WHERE provider = '$(escape_sql_local "$PROVIDER")' AND username = '$(escape_sql_local "$USERNAME")';")
+            if [ -z "$exists" ] || [ "$exists" -eq 0 ]; then
+                echo "Error: No matching credentials for $USERNAME@$PROVIDER. Run 'sudo fqdncredmgr list' to see available entries." >&2
+                exit 1
+            fi
+        fi
+        [ -z "$API_KEY" ] && API_KEY=$(prompt_api_key)
         if [ "$ACTION" = "add" ]; then
             add_creds "$PROVIDER" "$USERNAME" "$API_KEY"
         else
