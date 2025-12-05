@@ -53,9 +53,15 @@ add_creds() {
 
 update_creds() {
     local provider="${1:-}" username="${2:-}" api_key="${3:-}"
-    escape_sql() { printf '%s' "$1" | sed "s/'/''/g"; }
-    sqlite3 "$DB_PATH" "UPDATE creds SET key = '$(escape_sql "$api_key")' WHERE provider = '$(escape_sql "$provider")' AND username = '$(escape_sql "$username")';"
-    [ $(sqlite3 "$DB_PATH" "SELECT changes();") -gt 0 ] && echo "Credentials updated for $username@$provider" || { echo "Error: No matching credentials" >&2; exit 1; }
+    escape_sql() { printxf '%s' "$1" | sed "s/'/''/g"; }
+    local changes
+    changes=$(sqlite3 "$DB_PATH" "UPDATE creds SET key = '$(escape_sql "$api_key")' WHERE provider = '$(escape_sql "$provider")' AND username = '$(escape_sql "$username")'; SELECT changes();")
+    if [ -n "$changes" ] && [ "$changes" -gt 0 ]; then
+        echo "Credentials updated for $username@$provider"
+    else
+        echo "Error: Failed to update credentials" >&2
+        exit 1
+    fi
 }
 
 delete_creds() {
