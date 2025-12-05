@@ -1,0 +1,988 @@
+#!/bin/bash
+# Namecheap DNS Provider Plugin
+# This provider handles all Namecheap-specific operations for domain management
+#
+# Expected environment variables from orchestrator:
+#   PROVIDER_USERNAME - The Namecheap username
+#   PROVIDER_API_KEY  - The Namecheap API key
+
+PROVIDER_NAME="namecheap.com"
+PROVIDER_API_BASE="https://api.namecheap.com/xml.response"
+
+# Rate limiting configuration
+# Namecheap limits: 50/min, 700/hour, 8000/day
+RATE_LIMIT_MINUTE=50
+RATE_LIMIT_HOUR=700
+RATE_LIMIT_DAY=8000
+RATE_LIMIT_BUFFER=5  # seconds buffer to avoid boundary race conditions
+RATE_DB_PATH="/etc/fqdnmgr/providers/namecheap.com-rate.db"
+DOMAINS_DB_PATH="/etc/fqdntools/domains.db"
+
+# Initialize rate limit database if it doesn't exist
+init_rate_db() {
+    if [ ! -f "$RATE_DB_PATH" ]; then
+        sqlite3 "$RATE_DB_PATH" "CREATE TABLE IF NOT EXISTS api_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, reqs INTEGER NOT NULL DEFAULT 1, timestamp INTEGER NOT NULL);"
+        chmod 0640 "$RATE_DB_PATH"
+        chown root:root "$RATE_DB_PATH" 2>/dev/null || true
+    fi
+}
+
+# Record an API call and purge old entries (>24h)
+record_api_call() {
+    local reqs="${1:-1}"
+    local now=$(date +%s)
+    local cutoff=$((now - 86400))  # 24 hours ago
+    
+    init_rate_db
+    
+    # Purge old entries and insert new record in one transaction
+    sqlite3 "$RATE_DB_PATH" "BEGIN TRANSACTION; DELETE FROM api_calls WHERE timestamp < $cutoff; INSERT INTO api_calls (reqs, timestamp) VALUES ($reqs, $now); COMMIT;"
+}
+
+# Get count of requests in a time window
+# $1 - seconds ago to start counting from
+get_requests_in_window() {
+    local window_seconds="$1"
+    local now=$(date +%s)
+    local cutoff=$((now - window_seconds))
+    
+    init_rate_db
+    
+    local count=$(sqlite3 "$RATE_DB_PATH" "SELECT COALESCE(SUM(reqs), 0) FROM api_calls WHERE timestamp >= $cutoff;" 2>/dev/null)
+    echo "${count:-0}"
+}
+
+# Calculate available API slots based on rate limits
+# Returns: minimum available slots across all windows
+get_available_slots() {
+    local reqs_minute=$(get_requests_in_window 60)
+    local reqs_hour=$(get_requests_in_window 3600)
+    local reqs_day=$(get_requests_in_window 86400)
+    
+    local avail_minute=$((RATE_LIMIT_MINUTE - reqs_minute))
+    local avail_hour=$((RATE_LIMIT_HOUR - reqs_hour))
+    local avail_day=$((RATE_LIMIT_DAY - reqs_day))
+    
+    # Return minimum of all three (but not less than 0)
+    local min=$avail_minute
+    [ $avail_hour -lt $min ] && min=$avail_hour
+    [ $avail_day -lt $min ] && min=$avail_day
+    [ $min -lt 0 ] && min=0
+    
+    echo "$min"
+}
+
+# Calculate wait time until a slot becomes available
+# Returns: seconds to wait (with 5s buffer), or 0 if slots available
+get_wait_time() {
+    local avail=$(get_available_slots)
+    if [ "$avail" -gt 0 ]; then
+        echo "0"
+        return 0
+    fi
+    
+    local now=$(date +%s)
+    local wait_time=0
+    
+    # Check which limit is exhausted and find oldest entry in that window
+    local reqs_minute=$(get_requests_in_window 60)
+    local reqs_hour=$(get_requests_in_window 3600)
+    local reqs_day=$(get_requests_in_window 86400)
+    
+    if [ "$reqs_minute" -ge "$RATE_LIMIT_MINUTE" ]; then
+        # Find oldest entry in last minute
+        local oldest=$(sqlite3 "$RATE_DB_PATH" "SELECT MIN(timestamp) FROM api_calls WHERE timestamp >= $((now - 60));" 2>/dev/null)
+        if [ -n "$oldest" ]; then
+            local expires_at=$((oldest + 60))
+            local wait=$((expires_at - now + RATE_LIMIT_BUFFER))
+            [ $wait -gt $wait_time ] && wait_time=$wait
+        fi
+    fi
+    
+    if [ "$reqs_hour" -ge "$RATE_LIMIT_HOUR" ]; then
+        # Find oldest entry in last hour
+        local oldest=$(sqlite3 "$RATE_DB_PATH" "SELECT MIN(timestamp) FROM api_calls WHERE timestamp >= $((now - 3600));" 2>/dev/null)
+        if [ -n "$oldest" ]; then
+            local expires_at=$((oldest + 3600))
+            local wait=$((expires_at - now + RATE_LIMIT_BUFFER))
+            [ $wait -gt $wait_time ] && wait_time=$wait
+        fi
+    fi
+    
+    if [ "$reqs_day" -ge "$RATE_LIMIT_DAY" ]; then
+        # Find oldest entry in last day
+        local oldest=$(sqlite3 "$RATE_DB_PATH" "SELECT MIN(timestamp) FROM api_calls WHERE timestamp >= $((now - 86400));" 2>/dev/null)
+        if [ -n "$oldest" ]; then
+            local expires_at=$((oldest + 86400))
+            local wait=$((expires_at - now + RATE_LIMIT_BUFFER))
+            [ $wait -gt $wait_time ] && wait_time=$wait
+        fi
+    fi
+    
+    # Ensure at least buffer time if we calculated 0 but no slots
+    [ $wait_time -le 0 ] && wait_time=$RATE_LIMIT_BUFFER
+    
+    echo "$wait_time"
+}
+
+# Rate-limited API request wrapper
+# Replaces direct curl calls - records the call and executes curl
+# Usage: api_request "URL"
+# Returns: curl output, sets API_RESPONSE variable
+api_request() {
+    local url="$1"
+    
+    # Record the API call
+    record_api_call 1
+    
+    # Log the request (mask API key for security)
+    local masked_url
+    masked_url=$(echo "$url" | sed 's/ApiKey=[^&]*/ApiKey=***MASKED***/g')
+    log_request "$PROVIDER_NAME" "curl -s \"$masked_url\""
+    
+    # Execute curl and capture response
+    API_RESPONSE=$(curl -s "$url")
+    local curl_status=$?
+    
+    # Log the response
+    log_response "$PROVIDER_NAME" "$API_RESPONSE"
+    
+    echo "$API_RESPONSE"
+    return $curl_status
+}
+
+# Rate-limited API POST request wrapper
+# Usage: api_post_request "Command" "WAN_IP" "&SLD=...&TLD=...&HostName1=..."
+api_post_request() {
+    local command="$1"
+    local wan_ip="$2"
+    local extra_params="${3:-}"
+
+    # Record the API call
+    record_api_call 1
+
+    # Build base URL without extra params
+    local base_url="${PROVIDER_API_BASE}?ApiUser=${PROVIDER_USERNAME}&ApiKey=${PROVIDER_API_KEY}&UserName=${PROVIDER_USERNAME}&Command=${command}&ClientIp=${wan_ip}"
+
+    # Prepare data: strip leading '&' if present
+    local data="${extra_params#&}"
+
+    # Split on '&' and feed each key=value as --data-urlencode to curl
+    local IFS='&'
+    local curl_args=()
+    for pair in $data; do
+        [ -z "$pair" ] && continue
+        curl_args+=(--data-urlencode "$pair")
+    done
+    unset IFS
+
+    # Log the request (mask API key for security)
+    local masked_url
+    masked_url=$(echo "$base_url" | sed 's/ApiKey=[^&]*/ApiKey=***MASKED***/g')
+    local masked_data
+    masked_data=$(echo "$data" | sed 's/ApiKey=[^&]*/ApiKey=***MASKED***/g')
+    log_request "$PROVIDER_NAME" "curl -s --data-urlencode \"$masked_data\" \"$masked_url\""
+
+    API_RESPONSE=$(curl -s "${curl_args[@]}" "$base_url")
+    local curl_status=$?
+
+    # Log the response
+    log_response "$PROVIDER_NAME" "$API_RESPONSE"
+
+    echo "$API_RESPONSE"
+    return $curl_status
+}
+
+# Helper function to build API URL with authentication
+build_api_url() {
+    local command="$1"
+    local wan_ip="$2"
+    local extra_params="${3:-}"
+    
+    echo "${PROVIDER_API_BASE}?ApiUser=${PROVIDER_USERNAME}&ApiKey=${PROVIDER_API_KEY}&UserName=${PROVIDER_USERNAME}&Command=${command}&ClientIp=${wan_ip}${extra_params}"
+}
+
+# Helper function to check API response for errors
+check_api_error() {
+    local response="$1"
+    local operation="${2:-API operation}"
+    
+    if echo "$response" | grep -q 'Status="ERROR"'; then
+        echo "Error: $operation failed:" 2>/dev/null
+        echo "$response" | grep -o '<Error[^>]*>[^<]*</Error>' || echo "Unknown API error"
+        exit 1
+    fi
+}
+
+# Provider-specific function to get domain list
+# Returns: DOMAIN_LIST variable containing newline-separated domain names
+provider_get_domain_list() {
+    local wan_ip="$1"
+    
+    # Call Namecheap API to get domain list
+    local api_url=$(build_api_url "namecheap.domains.getList" "$wan_ip")
+    API_RESPONSE=$(api_request "$api_url")
+    
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to call Namecheap API" 2>/dev/null
+        exit 1
+    fi
+    
+    check_api_error "$API_RESPONSE" "Get domain list"
+    
+    # Extract domain names from XML response
+    DOMAIN_LIST=$(echo "$API_RESPONSE" | grep -o 'Name="[^"]*"' | sed 's/Name="//g' | sed 's/"//g')
+    
+    if [ -z "$DOMAIN_LIST" ]; then
+        echo "Error: No domains found in Namecheap account" 2>/dev/null
+        exit 1
+    fi
+}
+
+# Check if a given domain is present and active (not expired) in the
+# Namecheap account using namecheap.domains.getList.
+#
+# Parameters:
+#   $1 - domain name (e.g. example.com)
+#   $2 - WAN IP (ClientIp for API)
+#
+# Returns (via echo):
+#   "status=owned"   if domain is found and IsExpired="false"
+#   "status=taken"   if domain is found but IsExpired="true"
+#   "status=free"    if domain is not in the account at all
+#
+# Exits non-zero on API or parsing errors.
+provider_check_domain_status() {
+    local domain="$1"
+    local wan_ip="$2"
+
+    if [ -z "$domain" ] || [ -z "$wan_ip" ]; then
+        echo "Error: provider_check_domain_status requires domain and WAN IP" 2>/dev/null
+        return 1
+    fi
+
+    local api_url
+    api_url=$(build_api_url "namecheap.domains.getList" "$wan_ip" "&SearchTerm=${domain}&PageSize=100")
+    local response
+    response=$(api_request "$api_url")
+
+    if [ $? -ne 0 ] || [ -z "$response" ]; then
+        echo "Error: Failed to call Namecheap getList API" 2>/dev/null
+        return 1
+    fi
+
+    check_api_error "$response" "Get domain list (check status)"
+
+    # Look for a Domain element with Name="domain" and capture IsExpired value
+    local line is_expired
+    line=$(echo "$response" | grep -i "<Domain " | grep -i "Name=\"$domain\"" | head -n1 || true)
+
+    if [ -z "$line" ]; then
+        echo "status=free"
+        return 0
+    fi
+
+    is_expired=$(echo "$line" | grep -o 'IsExpired="[^"]*"' | sed 's/IsExpired="//;s/"//')
+
+    if echo "$is_expired" | grep -iq "true"; then
+        echo "status=taken"
+    else
+        echo "status=owned"
+    fi
+
+    return 0
+}
+
+# Provider-specific function to get existing DNS records for a domain
+# Returns: PARSED_RECORDS variable containing records in format "name|type|address|ttl|mxpref\n..."
+provider_get_dns_records() {
+    local domain="$1"
+    local wan_ip="$2"
+    
+    # Parse domain into SLD and TLD
+    SLD=$(echo "$domain" | cut -d'.' -f1)
+    TLD=$(echo "$domain" | cut -d'.' -f2-)
+    
+    # Get existing DNS records
+    local api_url=$(build_api_url "namecheap.domains.dns.getHosts" "$wan_ip" "&SLD=${SLD}&TLD=${TLD}")
+    EXISTING_RECORDS=$(api_request "$api_url")
+    
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to retrieve existing DNS records" 2>/dev/null
+        exit 1
+    fi
+    
+    check_api_error "$EXISTING_RECORDS" "Get DNS records"
+    
+    # DEBUG: Log raw API response
+    echo "===== DEBUG provider_get_dns_records $(date) =====" >> /tmp/fqdnmgr_debug.log
+    echo "Domain: $domain" >> /tmp/fqdnmgr_debug.log
+    echo "Raw API Response:" >> /tmp/fqdnmgr_debug.log
+    echo "$EXISTING_RECORDS" >> /tmp/fqdnmgr_debug.log
+    echo "" >> /tmp/fqdnmgr_debug.log
+    
+    # Parse existing records into structured format using xmllint
+    PARSED_RECORDS=""
+    
+    # Use local-name() for namespace-agnostic matching
+    # This handles both namespaced XML (xmlns="...") and non-namespaced XML
+    # Also handles both <host> (lowercase) and <Host> (uppercase) via translate()
+    # translate() converts element name to lowercase for comparison
+    local host_count
+    host_count=$(echo "$EXISTING_RECORDS" | xmllint --xpath "count(//*[translate(local-name(),'HOST','host')='host'])" - 2>/dev/null || echo "0")
+    
+    # DEBUG: Log host count
+    echo "Host count: $host_count" >> /tmp/fqdnmgr_debug.log
+    
+    # Extract each host element's attributes using namespace-agnostic XPath
+    # local-name() returns the element name without namespace prefix
+    # translate() normalizes case for matching
+    for ((i=1; i<=host_count; i++)); do
+        HOST_NAME=$(echo "$EXISTING_RECORDS" | xmllint --xpath "string((//*[translate(local-name(),'HOST','host')='host'])[$i]/@Name)" - 2>/dev/null)
+        HOST_TYPE=$(echo "$EXISTING_RECORDS" | xmllint --xpath "string((//*[translate(local-name(),'HOST','host')='host'])[$i]/@Type)" - 2>/dev/null)
+        HOST_ADDRESS=$(echo "$EXISTING_RECORDS" | xmllint --xpath "string((//*[translate(local-name(),'HOST','host')='host'])[$i]/@Address)" - 2>/dev/null)
+        HOST_TTL=$(echo "$EXISTING_RECORDS" | xmllint --xpath "string((//*[translate(local-name(),'HOST','host')='host'])[$i]/@TTL)" - 2>/dev/null)
+        HOST_MXPREF=$(echo "$EXISTING_RECORDS" | xmllint --xpath "string((//*[translate(local-name(),'HOST','host')='host'])[$i]/@MXPref)" - 2>/dev/null)
+        
+        # DEBUG: Log each parsed record
+        echo "  Record $i: Name=$HOST_NAME Type=$HOST_TYPE Address=$HOST_ADDRESS TTL=$HOST_TTL MXPref=$HOST_MXPREF" >> /tmp/fqdnmgr_debug.log
+        
+        if [ -n "$HOST_NAME" ] && [ -n "$HOST_TYPE" ] && [ -n "$HOST_ADDRESS" ]; then
+            PARSED_RECORDS="${PARSED_RECORDS}${HOST_NAME}|${HOST_TYPE}|${HOST_ADDRESS}|${HOST_TTL:-1800}|${HOST_MXPREF}\n"
+        fi
+    done
+    
+    # DEBUG: Log final parsed records
+    echo "Final PARSED_RECORDS:" >> /tmp/fqdnmgr_debug.log
+    echo -e "$PARSED_RECORDS" >> /tmp/fqdnmgr_debug.log
+    echo "=====================================" >> /tmp/fqdnmgr_debug.log
+}
+
+# Provider-specific function to set DNS records (used by both certify and cleanup)
+# Parameters: domain, wan_ip, parsed_records, include_acme_challenge, acme_value, [exclude_acme_token]
+# parsed_records format: "name|type|address|ttl|mxpref\n..."
+provider_set_dns_records() {
+    local domain="$1"
+    local wan_ip="$2"
+    local parsed_records="$3"
+    local include_acme_challenge="$4"
+    local acme_value="$5"
+    local exclude_acme_token="${6:-}"  # Optional: token to exclude during cleanup
+    
+    # Parse domain into SLD and TLD
+    local sld=$(echo "$domain" | cut -d'.' -f1)
+    local tld=$(echo "$domain" | cut -d'.' -f2-)
+    
+    # Build base parameters
+    local host_params="&SLD=${sld}&TLD=${tld}"
+    local record_count=1
+    
+    # Add existing records to parameters
+    while IFS='|' read -r host_name host_type host_address host_ttl host_mxpref; do
+        # Skip ACME challenge record if we're excluding it (cleanup mode)
+        if [ -n "$exclude_acme_token" ] && [ "$host_name" = "_acme-challenge" ] && [ "$host_type" = "TXT" ] && [ "$host_address" = "$exclude_acme_token" ]; then
+            continue
+        fi
+        
+        if [ -n "$host_name" ] && [ -n "$host_type" ] && [ -n "$host_address" ]; then
+            host_params="${host_params}&HostName${record_count}=${host_name}&RecordType${record_count}=${host_type}&Address${record_count}=${host_address}&TTL${record_count}=${host_ttl}"
+            # Add MXPref for MX records
+            if [ "$host_type" = "MX" ]; then
+                # Add MXPref when present
+                if [ -n "$host_mxpref" ]; then
+                    host_params="${host_params}&MXPref${record_count}=${host_mxpref}"
+                fi
+                # Namecheap requires EmailType=MX for MX records when using setHosts
+                host_params="${host_params}&EmailType=MX"
+            fi
+            record_count=$((record_count + 1))
+        fi
+    done <<< "$(echo -e "$parsed_records")"
+    
+    # Add ACME challenge record if requested
+    if [ "$include_acme_challenge" = "true" ]; then
+        host_params="${host_params}&HostName${record_count}=_acme-challenge&RecordType${record_count}=TXT&Address${record_count}=${acme_value}&TTL${record_count}=300"
+    fi
+    
+    # Make the setHosts API call using POST (safer encoding / avoids URL length limits)
+    local set_response
+    set_response=$(api_post_request "namecheap.domains.dns.setHosts" "$wan_ip" "$host_params")
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to set DNS records" 2>/dev/null
+        exit 1
+    fi
+    
+    check_api_error "$set_response" "Set DNS records"
+    
+    # Check if setHosts was successful
+    if echo "$set_response" | grep -q 'IsSuccess="true"'; then
+        # Verify what Namecheap now reports for this domain and log it
+        provider_get_dns_records "$domain" "$wan_ip" >/dev/null 2>&1 || true
+        return 0
+    else
+        echo "Error: Unexpected response from setHosts API"
+        echo "$set_response"
+        exit 1
+    fi
+}
+
+# Provider-specific certify implementation
+provider_certify() {
+    local domain="$1"
+    local validation_token="$2"
+    local wan_ip="$3"
+    
+    # Get existing DNS records
+    provider_get_dns_records "$domain" "$wan_ip"
+    
+    # Set DNS records with ACME challenge
+    provider_set_dns_records "$domain" "$wan_ip" "$PARSED_RECORDS" "true" "$validation_token"
+}
+
+# Provider-specific cleanup implementation
+provider_cleanup() {
+    local domain="$1"
+    local validation_token="$2"
+    local wan_ip="$3"
+    
+    # Get existing DNS records
+    provider_get_dns_records "$domain" "$wan_ip"
+    
+    # Set DNS records excluding the ACME challenge (pass token as 6th param to filter it out)
+    provider_set_dns_records "$domain" "$wan_ip" "$PARSED_RECORDS" "false" "" "$validation_token"
+}
+
+# Provider-specific setInitRecords implementation
+# Sets initial DNS records: A @ -> WAN_IP, A * -> WAN_IP, MX @ -> mail.$domain
+# This REPLACES all existing DNS records with only these 3 records
+# Optional 3rd parameter: TTL in seconds (default: 60)
+provider_set_init_records() {
+    local domain="$1"
+    local wan_ip="$2"
+    local ttl="${3:-60}"  # Default to 60s if not specified
+    
+    # Parse domain into SLD and TLD
+    local sld=$(echo "$domain" | cut -d'.' -f1)
+    local tld=$(echo "$domain" | cut -d'.' -f2-)
+    
+    # Build parameters for the 3 initial records
+    # Record 1: A record, @ host, WAN_IP value
+    # Record 2: A record, * host, WAN_IP value
+    # Record 3: MX record, @ host, mail.$domain value, priority 10
+    local host_params="&SLD=${sld}&TLD=${tld}"
+    host_params="${host_params}&HostName1=@&RecordType1=A&Address1=${wan_ip}&TTL1=${ttl}"
+    host_params="${host_params}&HostName2=*&RecordType2=A&Address2=${wan_ip}&TTL2=${ttl}"
+    host_params="${host_params}&HostName3=@&RecordType3=MX&Address3=mail.${domain}&MXPref3=10&TTL3=${ttl}&EmailType=MX"
+    
+    # Make the setHosts API call (this replaces ALL existing records) using POST
+    local set_response
+    set_response=$(api_post_request "namecheap.domains.dns.setHosts" "$wan_ip" "$host_params")
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to set initial DNS records" >&2
+        return 1
+    fi
+    
+    check_api_error "$set_response" "Set initial DNS records"
+    
+    # Check if setHosts was successful
+    if echo "$set_response" | grep -q 'IsSuccess="true"'; then
+        echo "Success: Initial DNS records set for $domain"
+        echo "  A    @  -> $wan_ip (TTL: ${ttl}s)"
+        echo "  A    *  -> $wan_ip (TTL: ${ttl}s)"
+        echo "  MX   @  -> mail.$domain (Priority: 10, TTL: ${ttl}s)"
+        # Verify what Namecheap now reports for this domain and log it
+        provider_get_dns_records "$domain" "$wan_ip" >/dev/null 2>&1 || true
+        return 0
+    else
+        echo "Error: Unexpected response from setHosts API" >&2
+        echo "$set_response" >&2
+        return 1
+    fi
+}
+
+# Domain config path
+DOMAIN_CONF="/etc/fqdnmgr/domain.conf"
+
+# Load domain registration config
+load_domain_config() {
+    if [ ! -f "$DOMAIN_CONF" ]; then
+        echo "Error: Domain config file $DOMAIN_CONF not found" >&2
+        return 2
+    fi
+    source "$DOMAIN_CONF"
+    
+    # Validate required fields
+    if [ -z "$FIRST_NAME" ] || [ -z "$LAST_NAME" ] || [ -z "$ADDRESS1" ] || \
+       [ -z "$CITY" ] || [ -z "$STATE_PROVINCE" ] || [ -z "$POSTAL_CODE" ] || \
+       [ -z "$COUNTRY" ] || [ -z "$PHONE" ] || [ -z "$EMAIL" ]; then
+        echo "Error: Missing required fields in $DOMAIN_CONF" >&2
+        return 2
+    fi
+}
+
+# Check domain availability (namecheap.domains.check)
+# Returns: "available" if domain is available and not premium, "premium" if premium, "unavailable" otherwise
+provider_check_availability() {
+    local domain="$1"
+    local wan_ip="$2"
+    
+    local api_url=$(build_api_url "namecheap.domains.check" "$wan_ip" "&DomainList=${domain}")
+    local response=$(api_request "$api_url")
+    
+    if [ $? -ne 0 ] || [ -z "$response" ]; then
+        echo "Error: Failed to call Namecheap check API" >&2
+        return 2
+    fi
+    
+    if echo "$response" | grep -q 'Status="ERROR"'; then
+        echo "$response" >> "$LOG_FILE"
+        return 2
+    fi
+    
+    local available=$(echo "$response" | grep -o 'Available="[^"]*"' | sed 's/Available="//;s/"//')
+    local is_premium=$(echo "$response" | grep -o 'IsPremiumName="[^"]*"' | sed 's/IsPremiumName="//;s/"//')
+    
+    if echo "$is_premium" | grep -iq "true"; then
+        echo "premium"
+        return 0
+    fi
+    
+    if echo "$available" | grep -iq "true"; then
+        echo "available"
+        return 0
+    fi
+    
+    echo "unavailable"
+    return 0
+}
+
+# Get account balance (namecheap.users.getBalances)
+provider_get_balance() {
+    local wan_ip="$1"
+    
+    local api_url=$(build_api_url "namecheap.users.getBalances" "$wan_ip")
+    local response=$(api_request "$api_url")
+    
+    if [ $? -ne 0 ] || [ -z "$response" ]; then
+        echo "-1"
+        return 1
+    fi
+    
+    if echo "$response" | grep -q 'Status="ERROR"'; then
+        echo "-1"
+        return 1
+    fi
+    
+    local balance=$(echo "$response" | grep -o 'AvailableBalance="[^"]*"' | sed 's/AvailableBalance="//;s/"//')
+    echo "$balance"
+    return 0
+}
+
+# Provider-specific purchase implementation
+# Returns: 0=success, 1=insufficient balance, 2=other error
+provider_purchase() {
+    local domain="$1"
+    local wan_ip=$(curl -s ifconfig.me)
+    
+    if [ -z "$wan_ip" ]; then
+        echo "Error: Failed to determine WAN IP" >&2
+        echo "$(date): purchase $domain - Failed to determine WAN IP" >> "$LOG_FILE"
+        return 2
+    fi
+    
+    # Load config
+    load_domain_config || return 2
+    
+    # Step 1: Check domain availability
+    local availability=$(provider_check_availability "$domain" "$wan_ip")
+    
+    case "$availability" in
+        "premium")
+            echo "Error: Domain $domain is a premium domain, purchase not supported" >&2
+            echo "$(date): purchase $domain - Premium domain, not supported" >> "$LOG_FILE"
+            return 2
+            ;;
+        "unavailable")
+            echo "Error: Domain $domain is not available for registration" >&2
+            echo "$(date): purchase $domain - Domain not available" >> "$LOG_FILE"
+            return 2
+            ;;
+        "available")
+            ;;
+        *)
+            echo "Error: Failed to check domain availability" >&2
+            return 2
+            ;;
+    esac
+    
+    # Step 2: Build purchase params from config
+    local years="${YEARS:-2}"
+    local params="&DomainName=${domain}&Years=${years}"
+    
+    # URL encode values
+    local fn=$(echo "$FIRST_NAME" | sed 's/ /%20/g')
+    local ln=$(echo "$LAST_NAME" | sed 's/ /%20/g')
+    local addr=$(echo "$ADDRESS1" | sed 's/ /%20/g')
+    local city=$(echo "$CITY" | sed 's/ /%20/g')
+    local state=$(echo "$STATE_PROVINCE" | sed 's/ /%20/g')
+    local postal=$(echo "$POSTAL_CODE" | sed 's/ /%20/g')
+    local country=$(echo "$COUNTRY" | sed 's/ /%20/g')
+    local phone=$(echo "$PHONE" | sed 's/+/%2B/g')
+    local email=$(echo "$EMAIL" | sed 's/@/%40/g')
+    
+    # Add contact params for all 4 contact types (Registrant, Tech, Admin, AuxBilling)
+    for prefix in Registrant Tech Admin AuxBilling; do
+        params="${params}&${prefix}FirstName=${fn}"
+        params="${params}&${prefix}LastName=${ln}"
+        params="${params}&${prefix}Address1=${addr}"
+        params="${params}&${prefix}City=${city}"
+        params="${params}&${prefix}StateProvince=${state}"
+        params="${params}&${prefix}PostalCode=${postal}"
+        params="${params}&${prefix}Country=${country}"
+        params="${params}&${prefix}Phone=${phone}"
+        params="${params}&${prefix}EmailAddress=${email}"
+    done
+    
+    # Optional params
+    [ -n "$PROMOTION_CODE" ] && params="${params}&PromotionCode=${PROMOTION_CODE}"
+    [ "$ADD_FREE_WHOISGUARD" = "yes" ] && params="${params}&AddFreeWhoisguard=yes"
+    [ "$WG_ENABLED" = "yes" ] && params="${params}&WGEnabled=yes"
+    
+    # Step 3: Attempt purchase
+    local api_url=$(build_api_url "namecheap.domains.create" "$wan_ip" "$params")
+    local response=$(api_request "$api_url")
+    
+    if [ $? -ne 0 ] || [ -z "$response" ]; then
+        echo "Error: Failed to call Namecheap create API" >&2
+        echo "$(date): purchase $domain - API call failed" >> "$LOG_FILE"
+        return 2
+    fi
+    
+    # Check for success
+    if echo "$response" | grep -q 'Registered="true"'; then
+        echo "Success: Domain $domain registered"
+        return 0
+    fi
+    
+    # Check for error
+    if echo "$response" | grep -q 'Status="ERROR"'; then
+        local error_msg=$(echo "$response" | grep -o '<Error[^>]*>[^<]*</Error>' | head -1)
+        echo "$(date): purchase $domain - $error_msg" >> "$LOG_FILE"
+        echo "$(date): purchase $domain - Full response: $response" >> "$LOG_FILE"
+        
+        # Check if balance issue (error codes related to funds/balance)
+        if echo "$response" | grep -qE '(2033409|2528166|insufficient|balance|fund)'; then
+            # Double check by getting actual balance
+            local balance=$(provider_get_balance "$wan_ip")
+            echo "Error: Purchase failed, likely insufficient balance (Available: $balance)" >&2
+            return 1
+        fi
+        
+        echo "Error: Domain registration failed - $error_msg" >&2
+        return 2
+    fi
+    
+    # Unknown response
+    echo "$(date): purchase $domain - Unknown response: $response" >> "$LOG_FILE"
+    echo "Error: Unknown response from API" >&2
+    return 2
+}
+
+# List all owned (non-expired) domains from Namecheap account (unfiltered)
+# Parameters:
+#   $1 - WAN IP
+# Output: List of all domains (to stdout)
+provider_list_all_domains() {
+    local wan_ip="$1"
+    
+    if [ -z "$wan_ip" ]; then
+        echo "Error: WAN IP is required" >&2
+        return 1
+    fi
+    
+    # Fetch all domains with pagination
+    local page=1
+    local page_size=100
+    local total_pages=1
+    local all_domains=()
+    
+    while [ $page -le $total_pages ]; do
+        local api_url=$(build_api_url "namecheap.domains.getList" "$wan_ip" "&Page=${page}&PageSize=${page_size}")
+        local response=$(api_request "$api_url")
+        
+        if [ $? -ne 0 ] || [ -z "$response" ]; then
+            echo "Error: Failed to fetch domain list (page $page)" >&2
+            return 1
+        fi
+        
+        if echo "$response" | grep -q 'Status="ERROR"'; then
+            echo "Error: API error while fetching domains" >&2
+            return 1
+        fi
+        
+        # Get total items and calculate pages on first iteration
+        if [ $page -eq 1 ]; then
+            local total_items=$(echo "$response" | grep -o 'TotalItems="[^"]*"' | sed 's/TotalItems="//;s/"//')
+            if [ -n "$total_items" ] && [ "$total_items" -gt 0 ]; then
+                total_pages=$(( (total_items + page_size - 1) / page_size ))
+            fi
+        fi
+        
+        # Extract domains that are not expired and use Namecheap DNS
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            
+            local domain_name=$(echo "$line" | grep -o 'Name="[^"]*"' | sed 's/Name="//;s/"//')
+            local is_expired=$(echo "$line" | grep -o 'IsExpired="[^"]*"' | sed 's/IsExpired="//;s/"//')
+            local is_our_dns=$(echo "$line" | grep -o 'IsOurDNS="[^"]*"' | sed 's/IsOurDNS="//;s/"//')
+            
+            # Only include non-expired domains using Namecheap DNS
+            if [ -n "$domain_name" ] && ! echo "$is_expired" | grep -iq "true"; then
+                if echo "$is_our_dns" | grep -iq "true"; then
+                    all_domains+=("$domain_name")
+                fi
+            fi
+        done <<< "$(echo "$response" | grep -i '<Domain ')"
+        
+        page=$((page + 1))
+    done
+    
+    if [ ${#all_domains[@]} -eq 0 ]; then
+        echo "No owned domains found with Namecheap DNS"
+        return 0
+    fi
+    
+    # Sync all domains to local domains.db
+    for domain in "${all_domains[@]}"; do
+        sqlite3 "$DOMAINS_DB_PATH" "INSERT INTO domains (domain, status, registrar) VALUES ('$domain', 'owned', 'namecheap.com') ON CONFLICT(domain) DO UPDATE SET status='owned', registrar='namecheap.com';" 2>/dev/null
+    done
+    
+    # Print all domains
+    echo ""
+    echo "Owned domains (${#all_domains[@]} total):"
+    local idx=1
+    for domain in "${all_domains[@]}"; do
+        echo "  $idx) $domain"
+        idx=$((idx + 1))
+    done
+    
+    return 0
+}
+
+# List all owned (non-expired) domains from Namecheap account
+# Syncs results to local domains.db and returns domains with dns_init=0 or NULL
+# Parameters:
+#   $1 - WAN IP
+# Output: Numbered list of domains (to stdout), sets OWNED_DOMAINS_LIST array
+provider_list_owned_domains() {
+    local wan_ip="$1"
+    
+    if [ -z "$wan_ip" ]; then
+        echo "Error: WAN IP is required" >&2
+        return 1
+    fi
+    
+    # Fetch all domains with pagination
+    local page=1
+    local page_size=100
+    local total_pages=1
+    OWNED_DOMAINS_LIST=()
+    
+    while [ $page -le $total_pages ]; do
+        local api_url=$(build_api_url "namecheap.domains.getList" "$wan_ip" "&Page=${page}&PageSize=${page_size}")
+        local response=$(api_request "$api_url")
+        
+        if [ $? -ne 0 ] || [ -z "$response" ]; then
+            echo "Error: Failed to fetch domain list (page $page)" >&2
+            return 1
+        fi
+        
+        if echo "$response" | grep -q 'Status="ERROR"'; then
+            echo "Error: API error while fetching domains" >&2
+            return 1
+        fi
+        
+        # Get total items and calculate pages on first iteration
+        if [ $page -eq 1 ]; then
+            local total_items=$(echo "$response" | grep -o 'TotalItems="[^"]*"' | sed 's/TotalItems="//;s/"//')
+            if [ -n "$total_items" ] && [ "$total_items" -gt 0 ]; then
+                total_pages=$(( (total_items + page_size - 1) / page_size ))
+            fi
+        fi
+        
+        # Extract domains that are not expired and use Namecheap DNS
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            
+            local domain_name=$(echo "$line" | grep -o 'Name="[^"]*"' | sed 's/Name="//;s/"//')
+            local is_expired=$(echo "$line" | grep -o 'IsExpired="[^"]*"' | sed 's/IsExpired="//;s/"//')
+            local is_our_dns=$(echo "$line" | grep -o 'IsOurDNS="[^"]*"' | sed 's/IsOurDNS="//;s/"//')
+            
+            # Only include non-expired domains using Namecheap DNS
+            if [ -n "$domain_name" ] && ! echo "$is_expired" | grep -iq "true"; then
+                if echo "$is_our_dns" | grep -iq "true"; then
+                    OWNED_DOMAINS_LIST+=("$domain_name")
+                    
+                    # Sync to local domains.db
+                    sqlite3 "$DOMAINS_DB_PATH" "INSERT INTO domains (domain, status, registrar) VALUES ('$domain_name', 'owned', 'namecheap.com') ON CONFLICT(domain) DO UPDATE SET status='owned', registrar='namecheap.com';" 2>/dev/null
+                fi
+            fi
+        done <<< "$(echo "$response" | grep -i '<Domain ')"
+        
+        page=$((page + 1))
+    done
+    
+    if [ ${#OWNED_DOMAINS_LIST[@]} -eq 0 ]; then
+        echo "No owned domains found with Namecheap DNS" >&2
+        return 1
+    fi
+    
+    # Filter to only domains with dns_init=0 or NULL
+    local filtered_domains=()
+    local idx=1
+    for domain in "${OWNED_DOMAINS_LIST[@]}"; do
+        local dns_init=$(sqlite3 "$DOMAINS_DB_PATH" "SELECT dns_init FROM domains WHERE domain='$domain';" 2>/dev/null)
+        if [ -z "$dns_init" ] || [ "$dns_init" = "0" ] || [ "$dns_init" = "" ]; then
+            filtered_domains+=("$domain")
+            echo "$idx) $domain"
+            idx=$((idx + 1))
+        fi
+    done
+    
+    # Update OWNED_DOMAINS_LIST to filtered list
+    OWNED_DOMAINS_LIST=("${filtered_domains[@]}")
+    
+    if [ ${#OWNED_DOMAINS_LIST[@]} -eq 0 ]; then
+        echo "All domains already have DNS initialized" >&2
+        return 2
+    fi
+    
+    return 0
+}
+
+# Parse domain selection string (e.g., "1,3-5,7") into array indices
+# Parameters:
+#   $1 - selection string
+#   $2 - max valid index
+# Output: SELECTED_INDICES array (0-indexed)
+parse_domain_selection() {
+    local selection="$1"
+    local max_idx="$2"
+    SELECTED_INDICES=()
+    
+    # Handle "all" or empty (meaning all)
+    if [ -z "$selection" ] || [ "$selection" = "all" ]; then
+        for ((i=0; i<max_idx; i++)); do
+            SELECTED_INDICES+=($i)
+        done
+        return 0
+    fi
+    
+    # Parse comma-separated parts
+    IFS=',' read -ra parts <<< "$selection"
+    for part in "${parts[@]}"; do
+        part=$(echo "$part" | tr -d ' ')  # trim whitespace
+        
+        if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+            # Range: e.g., "3-5"
+            local start="${BASH_REMATCH[1]}"
+            local end="${BASH_REMATCH[2]}"
+            for ((i=start; i<=end; i++)); do
+                if [ $i -ge 1 ] && [ $i -le $max_idx ]; then
+                    SELECTED_INDICES+=($((i - 1)))  # Convert to 0-indexed
+                fi
+            done
+        elif [[ "$part" =~ ^[0-9]+$ ]]; then
+            # Single number
+            if [ "$part" -ge 1 ] && [ "$part" -le $max_idx ]; then
+                SELECTED_INDICES+=($((part - 1)))  # Convert to 0-indexed
+            fi
+        fi
+    done
+    
+    # Remove duplicates and sort
+    SELECTED_INDICES=($(printf '%s\n' "${SELECTED_INDICES[@]}" | sort -nu))
+    
+    return 0
+}
+
+# Batch initialize DNS records for multiple domains with rate limiting
+# Parameters:
+#   $1 - WAN IP
+#   $2 - space-separated list of domain names (or "all" to use OWNED_DOMAINS_LIST)
+# Returns: 0=all done, 1=partial (wait exceeded), 2=error
+provider_batch_init_dns() {
+    local wan_ip="$1"
+    shift
+    local domains=("$@")
+    
+    if [ -z "$wan_ip" ]; then
+        echo "Error: WAN IP is required" >&2
+        return 2
+    fi
+    
+    if [ ${#domains[@]} -eq 0 ]; then
+        echo "Error: No domains specified" >&2
+        return 2
+    fi
+    
+    local total=${#domains[@]}
+    local completed=0
+    local remaining_domains=("${domains[@]}")
+    
+    echo "Starting DNS initialization for $total domain(s)..."
+    
+    while [ ${#remaining_domains[@]} -gt 0 ]; do
+        # Check available slots
+        local slots=$(get_available_slots)
+        
+        if [ "$slots" -le 0 ]; then
+            # Calculate wait time
+            local wait_secs=$(get_wait_time)
+            
+            # If wait exceeds 10 minutes (600 seconds), abort
+            if [ "$wait_secs" -gt 600 ]; then
+                local remaining_count=${#remaining_domains[@]}
+                echo ""
+                echo "Rate limit reached. Wait time exceeds 10 minutes ($wait_secs seconds)."
+                echo "Completed: $completed/$total domains"
+                echo "Remaining: $remaining_count domain(s)"
+                echo ""
+                echo "To continue later, run:"
+                echo "  fqdnmgr initRecords namecheap.com"
+                return 1
+            fi
+            
+            echo "Rate limit reached. Waiting ${wait_secs}s for next slot..."
+            sleep "$wait_secs"
+            continue
+        fi
+        
+        # Process up to 'slots' domains in this batch
+        local batch_size=$slots
+        [ $batch_size -gt ${#remaining_domains[@]} ] && batch_size=${#remaining_domains[@]}
+        
+        for ((i=0; i<batch_size; i++)); do
+            local domain="${remaining_domains[0]}"
+            remaining_domains=("${remaining_domains[@]:1}")  # Remove first element
+            
+            echo "  Initializing DNS for: $domain"
+            
+            # Call provider_set_init_records (which uses api_request internally)
+            if provider_set_init_records "$domain" "$wan_ip" >/dev/null 2>&1; then
+                # Update dns_init in domains.db
+                sqlite3 "$DOMAINS_DB_PATH" "UPDATE domains SET dns_init=1 WHERE domain='$domain';" 2>/dev/null
+                completed=$((completed + 1))
+            else
+                echo "    Warning: Failed to initialize DNS for $domain"
+            fi
+        done
+        
+        echo "  Progress: $completed/$total"
+    done
+    
+    echo ""
+    echo "DNS initialization complete: $completed/$total domain(s)"
+    return 0
+}
+

@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS creds (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+username TEXT NOT NULL,
+key TEXT NOT NULL,
+provider TEXT NOT NULL,
+UNIQUE(provider, username)
+);

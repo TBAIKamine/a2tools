@@ -1,0 +1,17 @@
+Usage: fqdnmgr <function> [arguments...]
+Available functions:
+  certify <REGISTRAR>                    - Set up DNS challenge for SSL certificate
+  purchase <FQDN> <REGISTRAR>            - Purchase a domain
+  cleanup <REGISTRAR>                    - Clean up DNS challenge records
+  check <FQDN> [REGISTRAR] [--strict]    - Check domain status (free/owned/taken/unavailable)
+  setInitRecords <FQDN> <REGISTRAR>      - Set initial DNS records (A @, A *, MX @) for a single domain
+  list <REGISTRAR>                       - List all owned domains from registrar
+  migrate2local <REGISTRAR> [--domains "SELECTION"]
+                                         - Batch initialize DNS for owned domains
+                                           Interactive: shows numbered list, prompts for selection
+                                           Non-interactive: pass --domains "1,3-5" or "all"
+
+Available providers:
+
+(This file is read by the `fqdnmgr` script. The script will append the
+available providers list when printing usage.)

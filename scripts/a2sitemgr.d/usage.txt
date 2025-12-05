@@ -1,0 +1,37 @@
+Usage: $0 [OPTIONS] [FQDN]
+
+Arguments:
+FQDN        Fully Qualified Domain Name (can also be specified via -d/--fqdn)
+
+Options:
+    -d, --fqdn          Specify FQDN (accepts both "-d example.com" and "-d=example.com")
+    -r, --registrar     Optional registrar identifier. Currently only "namecheap" is
+                        supported (normalized internally to "namecheap.com"); other
+                        values will cause an error.
+    -m, --mode          Operation mode: one of `domain` (default), `pp`/`proxypass`, or `swc`/`subdomainWildCard`
+                        - `domain`: standard domain handling (default)
+                        - `pp` or `proxypass`: proxypass mode for subdomains (uses wildcard certs from base domain)
+                        - `swc` or `subdomainWildCard`: subdomain wildcard mode: creates minimal config with ServerName subdomain.* and calls a2wcrecalc
+    -s, --secured       Use HTTPS for ProxyPass backend (only with proxypass mode; default is HTTP)
+    -p, --port          Proxy port for ProxyPass backend (required with proxypass mode)
+    -ni, --non-interactive
+                        Run non-interactively: do not prompt and apply defaults immediately (useful for automation).
+                        When enabled, there is no countdown; otherwise interactive prompts auto-accept after 10s.
+    -c, --strict        Strict registrar matching. Passed to `fqdnmgr check` command.
+                        If a registrar is provided via -r/--registrar and a different
+                        registrar is detected, fqdnmgr will fail and the script exits.
+                        Without --strict, the script proceeds using the detected registrar
+                        (overriding the one provided via -r).
+    -h, --help          Show this help message
+
+Notes:
+- Default prompt countdowns are 10 seconds. Use `-ni`/`--non-interactive` to bypass prompts entirely.
+- Domain status is checked via `fqdnmgr` (if available) for `domain` and `proxypass` modes.
+- The script first checks for an existing certificate under `/etc/letsencrypt/live/<domain>/`.
+  If none is found, it requests a wildcard certificate via certbot using fqdnmgr hooks.
+- In proxypass mode, if the base domain configuration doesn't exist, the script will
+  recursively create it first before setting up the proxypass subdomain.
+- Registrar behavior: When fqdnmgr detects a registrar from its database or whois, the script
+  uses that detected registrar for subsequent operations (purchase, certbot hooks). If you
+  specified a different registrar via -r and want to enforce it, use -c/--strict to make the
+  script fail on mismatch instead of silently using the detected one.

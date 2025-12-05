@@ -1,0 +1,21 @@
+Usage: fqdncredmgr <action> <provider> <username> [-p <api_key>]
+
+Actions:
+  add       - Add new credentials
+  update    - Update existing credentials
+  delete    - Delete credentials
+
+Options:
+  -p <api_key>  Provide API key via command line
+                If not provided, you will be prompted interactively
+                (masked input with confirmation)
+
+Providers:
+  namecheap.com
+
+Examples:
+  fqdncredmgr add namecheap.com myuser -p myapikey123
+  fqdncredmgr add namecheap.com myuser              # prompts for API key
+  fqdncredmgr update namecheap.com myuser -p newapikey456
+  fqdncredmgr update namecheap.com myuser           # prompts for API key
+  fqdncredmgr delete namecheap.com myuser
