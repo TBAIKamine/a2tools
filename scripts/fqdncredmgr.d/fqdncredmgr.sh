@@ -1,238 +1,141 @@
 #!/bin/bash
 
-# this command manages FQDN credentials for domain name providers
-# it does not set any dns, and does not purchase domains
+# Manage FQDN provider credentials (add/update/delete/list)
 
-# List of acceptable providers (populated dynamically from ./providers)
-# `VALID_PROVIDERS` will be populated after `DIR` is known
 VALID_PROVIDERS=()
-
-# Database path
-DB_PATH="/etc/fqdntools/creds.db"
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fqdncredmgr.d"
-# Files bundled with this command live in the same directory as the
-# script (eg `.../fqdncredmgr.d`). The `getinput` helper is provided
-# as a sibling `.d` directory under the parent directory (eg
-# `/usr/local/bin/getinput.d/getinput.sh`), so compute `BASE_DIR` as
-# the parent of `DIR`.
+BASE_DIR="$(dirname "$DIR")"
 USAGE_FILE="$DIR/usage.txt"
 SCHEMA_FILE="$DIR/schema.sql"
-BASE_DIR="$(dirname "$DIR")"
-
-# Helper script for interactive input (sibling under the parent dir)
+DB_PATH="/etc/fqdntools/creds.db"
 GETINPUT_SCRIPT="$BASE_DIR/getinput.d/getinput.sh"
 
-# Populate VALID_PROVIDERS by inspecting the bundled providers directory
 PROVIDERS_DIR="/etc/fqdnmgr/providers"
 if [ -d "$PROVIDERS_DIR" ]; then
     for f in "$PROVIDERS_DIR"/*.provider; do
         [ -e "$f" ] || continue
         fbase="$(basename "$f")"
-        provider_name="${fbase%.provider}"
-        VALID_PROVIDERS+=("$provider_name")
+        VALID_PROVIDERS+=("${fbase%.provider}")
     done
 fi
 
-# Ensure required external files exist (no fallback)
-if [ ! -f "$USAGE_FILE" ]; then
-    echo "Error: Missing required file $USAGE_FILE" >&2
-    exit 1
-fi
-if [ ! -f "$SCHEMA_FILE" ]; then
-    echo "Error: Missing required file $SCHEMA_FILE" >&2
-    exit 1
-fi
-if [ ! -f "$GETINPUT_SCRIPT" ]; then
-    echo "Error: Missing required file $GETINPUT_SCRIPT" >&2
-    exit 1
-fi
+# Ensure required files exist
+[ -f "$USAGE_FILE" ] || { echo "Error: Missing $USAGE_FILE" >&2; exit 1; }
+[ -f "$SCHEMA_FILE" ] || { echo "Error: Missing $SCHEMA_FILE" >&2; exit 1; }
+[ -f "$GETINPUT_SCRIPT" ] || { echo "Error: Missing $GETINPUT_SCRIPT" >&2; exit 1; }
 
-# Source the getinput helper
 source "$GETINPUT_SCRIPT"
+usage() { cat "$USAGE_FILE"; exit 1; }
+init_db() { [ -f "$DB_PATH" ] || { echo "Error: Database $DB_PATH not found" >&2; exit 1; }; }
 
-# Function to prompt for API key interactively (dotted, no timeout, with confirmation)
+# needed when adding new creds
 prompt_api_key() {
     local api_key
     api_key=$(getInput "Enter API key" "" 0 "dotted" "true" "true" "false")
-    local exit_code=$?
-    if [ $exit_code -eq 200 ]; then
-        echo "Error: API key cannot be empty" >&2
-        exit 1
-    fi
+    [ $? -eq 200 ] && { echo "Error: API key cannot be empty" >&2; exit 1; }
     printf "%s" "$api_key"
 }
 
-# Function to display usage
-usage() {
-        cat "$USAGE_FILE"
-        exit 1
-}
-
-# Function to validate provider
+# for anything else than adding new creds
 validate_provider() {
-    local provider="$1"
-    for valid in "${VALID_PROVIDERS[@]}"; do
-        if [ "$provider" = "$valid" ]; then
-            return 0
-        fi
-    done
+    local p="$1"
+    for v in "${VALID_PROVIDERS[@]}"; do [ "$p" = "$v" ] && return 0; done
     return 1
 }
 
-# Function to initialize database
-# Database initialization is handled by the installer (`setup.sh`).
-# Here we only verify the DB exists; fail fast if not present.
-init_db() {
-    if [ ! -f "$DB_PATH" ]; then
-        echo "Error: Database $DB_PATH not found. Run the installer to initialize the database." >&2
-        exit 1
-    fi
-}
-
-# Function to add credentials
+# DB helpers and CRUD operations
 add_creds() {
-    local provider="$1"
-    local username="$2"
-    local api_key="$3"
-
-    # Escape single quotes for SQL
+    local provider="$1" username="$2" api_key="$3"
     escape_sql() { printf '%s' "$1" | sed "s/'/''/g"; }
-    local es_user=$(escape_sql "$username")
-    local es_key=$(escape_sql "$api_key")
-    local es_provider=$(escape_sql "$provider")
-
-    sqlite3 "$DB_PATH" "INSERT INTO creds (username, key, provider) VALUES ('$es_user', '$es_key', '$es_provider');"
-    if [ $? -eq 0 ]; then
-        echo "Credentials added successfully for $username@$provider"
-    else
-        echo "Error: Failed to add credentials. They may already exist." >&2
-        exit 1
-    fi
+    sqlite3 "$DB_PATH" "INSERT INTO creds (username, key, provider) VALUES ('$(escape_sql "$username")', '$(escape_sql "$api_key")', '$(escape_sql "$provider")');"
+    [ $? -eq 0 ] && echo "Credentials added for $username@$provider" || { echo "Error: Failed to add credentials" >&2; exit 1; }
 }
 
-# Function to update credentials
 update_creds() {
-    local provider="$1"
-    local username="$2"
-    local api_key="$3"
-
+    local provider="$1" username="$2" api_key="$3"
     escape_sql() { printf '%s' "$1" | sed "s/'/''/g"; }
-    local es_user=$(escape_sql "$username")
-    local es_key=$(escape_sql "$api_key")
-    local es_provider=$(escape_sql "$provider")
-
-    sqlite3 "$DB_PATH" "UPDATE creds SET key = '$es_key' WHERE provider = '$es_provider' AND username = '$es_user';"
-
-    local changes=$(sqlite3 "$DB_PATH" "SELECT changes();")
-    if [ "$changes" -gt 0 ]; then
-        echo "Credentials updated successfully for $username@$provider"
-    else
-        echo "Error: No matching credentials found to update." >&2
-        exit 1
-    fi
+    sqlite3 "$DB_PATH" "UPDATE creds SET key = '$(escape_sql "$api_key")' WHERE provider = '$(escape_sql "$provider")' AND username = '$(escape_sql "$username")';"
+    [ $(sqlite3 "$DB_PATH" "SELECT changes();") -gt 0 ] && echo "Credentials updated for $username@$provider" || { echo "Error: No matching credentials" >&2; exit 1; }
 }
 
-# Function to delete credentials
 delete_creds() {
-    local provider="$1"
-    local username="$2"
-
+    local provider="$1" username="$2"
     escape_sql() { printf '%s' "$1" | sed "s/'/''/g"; }
-    local es_user=$(escape_sql "$username")
-    local es_provider=$(escape_sql "$provider")
+    sqlite3 "$DB_PATH" "DELETE FROM creds WHERE provider = '$(escape_sql "$provider")' AND username = '$(escape_sql "$username")';"
+    [ $(sqlite3 "$DB_PATH" "SELECT changes();") -gt 0 ] && echo "Credentials deleted for $username@$provider" || { echo "Error: No matching credentials" >&2; exit 1; }
+}
 
-    sqlite3 "$DB_PATH" "DELETE FROM creds WHERE provider = '$es_provider' AND username = '$es_user';"
-
-    local changes=$(sqlite3 "$DB_PATH" "SELECT changes();")
-    if [ "$changes" -gt 0 ]; then
-        echo "Credentials deleted successfully for $username@$provider"
+# Mask usernames for listing
+mask_username() {
+    local u="$1"
+    if [[ "$u" == *"@"* ]]; then
+        local lp="${u%%@*}" dp="${u#*@}"
+        local domain_label="${dp%%.*}" extension=""
+        [[ "$dp" == *.* ]] && extension=".${dp#*.}"
+        local lp_len=${#lp}
+        if [ $lp_len -le 2 ]; then printf "%s" "$lp"; else printf "%s%s%s" "${lp:0:1}" "$(printf '%*s' $((lp_len-2)) '' | tr ' ' '*')" "${lp: -1}"; fi
+        printf "@%s%s" "${domain_label:0:1}" "$extension"
     else
-        echo "Error: No matching credentials found to delete." >&2
-        exit 1
+        local s="$u" l=${#s}
+        if [ $l -le 2 ]; then printf "%s" "$s"; else printf "%s%s%s" "${s:0:1}" "$(printf '%*s' $((l-2)) '' | tr ' ' '*')" "${s: -1}"; fi
     fi
 }
 
 # Main script logic
-if [ $# -lt 2 ]; then
+if [ $# -lt 1 ]; then
     echo "Error: Insufficient arguments" >&2
     usage
 fi
 
 ACTION="$1"
-PROVIDER="$2"
-USERNAME=""
-API_KEY=""
+shift
 
-# Parse remaining arguments
-shift 2
-while [ $# -gt 0 ]; do
-    case "$1" in
-        -p)
-            if [ $# -lt 2 ]; then
-                echo "Error: -p requires an argument" >&2
-                usage
-            fi
-            API_KEY="$2"
-            shift 2
-            ;;
-        *)
-            if [ -z "$USERNAME" ]; then
-                USERNAME="$1"
-                shift
-            else
-                echo "Error: Unexpected argument '$1'" >&2
-                usage
-            fi
-            ;;
-    esac
-done
-
-# Validate that username is provided
-if [ -z "$USERNAME" ]; then
-    echo "Error: USERNAME is required" >&2
-    usage
-fi
-
-# Validate action and prompt for API key if needed
 case "$ACTION" in
+    list)
+        init_db
+        sqlite3 -separator $'\t' "$DB_PATH" "SELECT provider, username FROM creds;" | \
+        while IFS=$'\t' read -r provider username; do
+            [ -z "$provider" ] && continue
+            printf "%s\t%s\n" "$provider" "$(mask_username "$username")"
+        done
+        ;;
     add|update)
-        # If API key not provided via -p, prompt interactively
-        if [ -z "$API_KEY" ]; then
-            API_KEY=$(prompt_api_key)
-        fi
-        if [ -z "$API_KEY" ]; then
-            echo "Error: API key is required for $ACTION" >&2
+        [ $# -lt 1 ] && { echo "Error: PROVIDER required" >&2; usage; }
+        PROVIDER="$1"; shift
+        if ! validate_provider "$PROVIDER"; then
+            echo "Error: Invalid provider '$PROVIDER'. Valid: ${VALID_PROVIDERS[*]}" >&2
             exit 1
+        fi
+        API_KEY="" USERNAME=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -p) [ $# -lt 2 ] && { echo "Error: -p requires argument" >&2; usage; }
+                    API_KEY="$2"; shift 2 ;;
+                *)  [ -n "$USERNAME" ] && { echo "Error: Unexpected '$1'" >&2; usage; }
+                    USERNAME="$1"; shift ;;
+            esac
+        done
+        [ -z "$USERNAME" ] && { echo "Error: USERNAME required" >&2; usage; }
+        [ -z "$API_KEY" ] && API_KEY=$(prompt_api_key)
+        init_db
+        if [ "$ACTION" = "add" ]; then
+            add_creds "$PROVIDER" "$USERNAME" "$API_KEY"
+        else
+            update_creds "$PROVIDER" "$USERNAME" "$API_KEY"
         fi
         ;;
     delete)
-        # API key not needed for delete
+        [ $# -lt 2 ] && { echo "Error: PROVIDER and USERNAME required" >&2; usage; }
+        PROVIDER="$1" USERNAME="$2"
+        if ! validate_provider "$PROVIDER"; then
+            echo "Error: Invalid provider '$PROVIDER'. Valid: ${VALID_PROVIDERS[*]}" >&2
+            exit 1
+        fi
+        init_db
+        delete_creds "$PROVIDER" "$USERNAME"
         ;;
     *)
         echo "Error: Invalid action '$ACTION'" >&2
         usage
-        ;;
-esac
-
-# Validate provider
-if ! validate_provider "$PROVIDER"; then
-    echo "Error: Invalid provider '$PROVIDER'" >&2
-    echo "Valid providers: ${VALID_PROVIDERS[*]}" >&2
-    exit 1
-fi
-
-# Initialize database
-init_db
-
-# Execute action
-case "$ACTION" in
-    add)
-        add_creds "$PROVIDER" "$USERNAME" "$API_KEY"
-        ;;
-    update)
-        update_creds "$PROVIDER" "$USERNAME" "$API_KEY"
-        ;;
-    delete)
-        delete_creds "$PROVIDER" "$USERNAME"
         ;;
 esac
