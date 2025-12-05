@@ -26,6 +26,9 @@ mkdir -p /etc/fqdnmgr
 cp -R ./scripts/fqdnmgr.d/providers /etc/fqdnmgr/
 chmod 0750 /etc/fqdnmgr/providers
 chown -R root:root /etc/fqdnmgr/providers
+cp ./uninstall.sh /usr/local/bin/a2sitemgr.d/uninstall.sh
+chmod 0550 /usr/local/bin/a2sitemgr.d/uninstall.sh
+chown root:root /usr/local/bin/a2sitemgr.d/uninstall.sh
 
 # fqdnmgr-specific: install domain registration config template
 cp ./scripts/fqdnmgr.d/domain.conf.tpl /etc/fqdnmgr/domain.conf.tpl
