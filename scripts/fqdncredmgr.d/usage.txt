@@ -1,21 +1,23 @@
-Usage: fqdncredmgr <action> <provider> <username> [-p <api_key>]
+Usage: fqdncredmgr <action> [provider] [username] [-p <api_key>]
 
 Actions:
-  add       - Add new credentials
-  update    - Update existing credentials
-  delete    - Delete credentials
+  add       Add new credentials
+  update    Update existing credentials
+  delete    Delete credentials
+  list      List stored providers and masked usernames (machine-parseable)
 
 Options:
-  -p <api_key>  Provide API key via command line
-                If not provided, you will be prompted interactively
-                (masked input with confirmation)
+  -p <api_key>  Provide API key on the command line. If omitted, you will be prompted.
 
 Providers:
-  namecheap.com
+  Discovered from /etc/fqdnmgr/providers (bundled examples: namecheap.com)
+
+Notes:
+  The `list` action prints raw tab-separated lines: `provider<TAB>masked_username` with no headers.
 
 Examples:
   fqdncredmgr add namecheap.com myuser -p myapikey123
   fqdncredmgr add namecheap.com myuser              # prompts for API key
   fqdncredmgr update namecheap.com myuser -p newapikey456
-  fqdncredmgr update namecheap.com myuser           # prompts for API key
   fqdncredmgr delete namecheap.com myuser
+  fqdncredmgr list

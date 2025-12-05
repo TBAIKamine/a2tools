@@ -72,12 +72,32 @@ mask_username() {
         local lp="${u%%@*}" dp="${u#*@}"
         local domain_label="${dp%%.*}" extension=""
         [[ "$dp" == *.* ]] && extension=".${dp#*.}"
+
+        # mask local part (keep first and last when length>2, otherwise mask fully)
         local lp_len=${#lp}
-        if [ $lp_len -le 2 ]; then printf "%s" "$lp"; else printf "%s%s%s" "${lp:0:1}" "$(printf '%*s' $((lp_len-2)) '' | tr ' ' '*')" "${lp: -1}"; fi
-        printf "@%s%s" "${domain_label:0:1}" "$extension"
+        local lp_mask
+        if [ $lp_len -le 2 ]; then
+            lp_mask="$(printf '%*s' "$lp_len" '' | tr ' ' '*')"
+        else
+            lp_mask="${lp:0:1}$(printf '%*s' $((lp_len-2)) '' | tr ' ' '*')${lp: -1}"
+        fi
+
+        # show first letter of domain label then mask the rest, preserve full extension
+        local dl_len=${#domain_label}
+        local d_mask
+        if [ $dl_len -le 2 ]; then
+            d_mask="$(printf '%*s' "$dl_len" '' | tr ' ' '*')"
+        else
+            d_mask="${domain_label:0:1}$(printf '%*s' $((dl_len-1)) '' | tr ' ' '*')"
+        fi
+        printf "%s@%s%s" "$lp_mask" "$d_mask" "$extension"
     else
         local s="$u" l=${#s}
-        if [ $l -le 2 ]; then printf "%s" "$s"; else printf "%s%s%s" "${s:0:1}" "$(printf '%*s' $((l-2)) '' | tr ' ' '*')" "${s: -1}"; fi
+        if [ $l -le 2 ]; then
+            printf "%s" "$(printf '%*s' "$l" '' | tr ' ' '*')"
+        else
+            printf "%s%s%s" "${s:0:1}" "$(printf '%*s' $((l-2)) '' | tr ' ' '*')" "${s: -1}"
+        fi
     fi
 }
 
