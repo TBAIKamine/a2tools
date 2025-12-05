@@ -8,16 +8,3 @@ Actions:
 
 Options:
   -p <api_key>  Provide API key on the command line. If omitted, you will be prompted.
-
-Providers:
-  Discovered from /etc/fqdnmgr/providers (bundled examples: namecheap.com)
-
-Notes:
-  The `list` action prints raw tab-separated lines: `provider<TAB>masked_username` with no headers.
-
-Examples:
-  fqdncredmgr add namecheap.com myuser -p myapikey123
-  fqdncredmgr add namecheap.com myuser              # prompts for API key
-  fqdncredmgr update namecheap.com myuser -p newapikey456
-  fqdncredmgr delete namecheap.com myuser
-  fqdncredmgr list

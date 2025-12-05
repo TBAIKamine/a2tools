@@ -61,8 +61,27 @@ update_creds() {
 delete_creds() {
     local provider="$1" username="$2"
     escape_sql() { printf '%s' "$1" | sed "s/'/''/g"; }
-    sqlite3 "$DB_PATH" "DELETE FROM creds WHERE provider = '$(escape_sql "$provider")' AND username = '$(escape_sql "$username")';"
-    [ $(sqlite3 "$DB_PATH" "SELECT changes();") -gt 0 ] && echo "Credentials deleted for $username@$provider" || { echo "Error: No matching credentials" >&2; exit 1; }
+    if [ -z "$username" ]; then
+        sqlite3 "$DB_PATH" "DELETE FROM creds WHERE provider = '$(escape_sql "$provider")';"
+        local changes
+        changes=$(sqlite3 "$DB_PATH" "SELECT changes();")
+        if [ "$changes" -gt 0 ]; then
+            echo "Credentials deleted for provider $provider (deleted $changes entries)"
+        else
+            echo "Error: No matching credentials for provider '$provider'" >&2
+            exit 1
+        fi
+    else
+        sqlite3 "$DB_PATH" "DELETE FROM creds WHERE provider = '$(escape_sql "$provider")' AND username = '$(escape_sql "$username")';"
+        local changes
+        changes=$(sqlite3 "$DB_PATH" "SELECT changes();")
+        if [ "$changes" -gt 0 ]; then
+            echo "Credentials deleted for $username@$provider"
+        else
+            echo "Error: No matching credentials for $username@$provider" >&2
+            exit 1
+        fi
+    fi
 }
 
 # Mask usernames for listing
@@ -92,7 +111,8 @@ mask_username() {
         fi
         printf "%s@%s%s" "$lp_mask" "$d_mask" "$extension"
     else
-        local s="$u" l=${#s}
+        local s="$u"
+        local l=${#s}
         if [ $l -le 2 ]; then
             printf "%s" "$(printf '%*s' "$l" '' | tr ' ' '*')"
         else
@@ -145,7 +165,7 @@ case "$ACTION" in
         fi
         ;;
     delete)
-        [ $# -lt 2 ] && { echo "Error: PROVIDER and USERNAME required" >&2; usage; }
+        [ $# -lt 1 ] && { echo "Error: PROVIDER required" >&2; usage; }
         PROVIDER="$1" USERNAME="$2"
         if ! validate_provider "$PROVIDER"; then
             echo "Error: Invalid provider '$PROVIDER'. Valid: ${VALID_PROVIDERS[*]}" >&2
