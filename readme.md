@@ -40,6 +40,12 @@ git clone https://github.com/TBAIKamine/a2tools.git .
 bash ./setup.sh
 ```
 
+## Supported registrars
+- [namecheap.com](https://www.namecheap.com)
+- [wedos.com](https://www.wedos.com)
+
+additional providers may be added, PR are also welcome
+
 ## Basic usage
 #### 1. Add credentials:
 ```
