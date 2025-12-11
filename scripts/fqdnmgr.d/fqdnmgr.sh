@@ -379,6 +379,50 @@ update_avg_propagation_time() {
 }
 
 # =============================================================================
+# Unified DNS Wait Status Output
+# =============================================================================
+
+# Print DNS wait status line with unified format (in-place update)
+# Usage: print_dns_wait_status <domain> <phase> <avg> <next_check_in> <elapsed> <timeout> [output_dest]
+# If next_check_in is empty or 0, the "next:" part is omitted (first check scenario)
+# output_dest: "tty" (default) or "stderr"
+print_dns_wait_status() {
+    local domain="$1"
+    local phase="$2"
+    local avg="$3"
+    local next_check_in="$4"
+    local elapsed="$5"
+    local timeout="$6"
+    local output_dest="${7:-tty}"
+    
+    local status_line
+    if [ -z "$next_check_in" ] || [ "$next_check_in" -eq 0 ] 2>/dev/null; then
+        # First check - no "next:" part
+        status_line=$(printf '  %s: [%s] [avg: %ds | elapsed: %ds | timeout: %ds]' "$domain" "$phase" "$avg" "$elapsed" "$timeout")
+    else
+        # Subsequent checks - include "next:" countdown
+        status_line=$(printf '  %s: [%s] [avg: %ds | next: %ds | elapsed: %ds | timeout: %ds]' "$domain" "$phase" "$avg" "$next_check_in" "$elapsed" "$timeout")
+    fi
+    
+    if [ "$output_dest" = "tty" ]; then
+        printf '\033[1A\r\033[K%s\n' "$status_line" > /dev/tty
+    else
+        printf '\r\033[K%s\n' "$status_line" > /dev/tty
+    fi
+}
+
+# Print DNS wait status for parallel mode (no cursor-up, just clear and reprint)
+# Usage: print_dns_wait_status_inline <domain> <avg> <elapsed> <timeout>
+print_dns_wait_status_inline() {
+    local domain="$1"
+    local avg="$2"
+    local elapsed="$3"
+    local timeout="$4"
+    
+    printf '\r\033[K  %s: [avg: %ds | elapsed: %ds | timeout: %ds]\n' "$domain" "$avg" "$elapsed" "$timeout" > /dev/tty
+}
+
+# =============================================================================
 
 # Verbose mode - controlled by -v flag
 VERBOSE=false
@@ -387,8 +431,8 @@ VERBOSE=false
 NON_INTERACTIVE=false
 
 # Verbose echo - only prints when VERBOSE=true
-# Always outputs to stderr to avoid polluting machine-readable stdout
-vecho() { [ "$VERBOSE" = true ] && echo "$@" >&2 || true; }
+# Uses /dev/tty for output (avoids stderr which can be captured/redirected)
+vecho() { [ "$VERBOSE" = true ] && echo "$@" > /dev/tty 2>/dev/null || true; }
 
 # Database configuration
 DOMAINS_DB_PATH="/etc/fqdntools/domains.db"
@@ -1156,8 +1200,8 @@ process_single_domain_init() {
         local avg_propagation
         avg_propagation=$(get_avg_propagation_time "$ns_server" "$actual_registrar")
         
-        vecho "Waiting for DNS propagation (timeout: ${max_wait}s)..."
-        vecho "  [NS: $ns_server] average propagation time: ${avg_propagation}s"
+        echo "Waiting for DNS propagation (timeout: ${max_wait}s)..." > /dev/tty
+        [ "$VERBOSE" = true ] && echo "  [NS: $ns_server] average propagation time: ${avg_propagation}s" > /dev/tty
         
         # Track first check timestamp for adaptive timing
         # Check if we already have a DNS change timestamp (script restart scenario)
@@ -1168,16 +1212,16 @@ process_single_domain_init() {
         local check_start_ts
         check_start_ts=$(date +%s)
         
-        # Print initial status line
-        echo "  $fqdn: waiting... (0/${max_wait}s)" >&2
+        # Print initial status line (first check happens immediately, no "next:")
+        echo "  $fqdn: [Init DNS] checking..." > /dev/tty
         
         while [ $elapsed -lt $max_wait ]; do
             local remaining=$((max_wait - elapsed))
             
-            if check_init_dns_propagation "$fqdn" "$WAN_IP" "$elapsed"; then
+            if check_init_dns_propagation "$fqdn" "$WAN_IP" "$elapsed" "$avg_propagation" "$max_wait"; then
                 # Move up and clear the status line, then print success
-                printf '\033[1A\r\033[K  %s: \033[32mPROPAGATED\033[0m (%ds)\n' "$fqdn" "$elapsed" >&2
-                vecho "DNS propagation complete for $fqdn."
+                printf '\033[1A\r\033[K  %s: \033[32mPROPAGATED\033[0m (%ds)\n' "$fqdn" "$elapsed" > /dev/tty
+                [ "$VERBOSE" = true ] && echo "DNS propagation complete for $fqdn." > /dev/tty
                 
                 # Calculate actual propagation time and update average
                 local now_ts
@@ -1194,7 +1238,7 @@ process_single_domain_init() {
                 vecho "Updating TTL to 7200s for production use..."
                 # Log TTL-update provider call
                 printf '%s [provider-call] %s %s %s ttl=7200 override=%s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$actual_registrar" "provider_set_init_dns_records" "$fqdn" "${override_mode:-false}" >> "$LOG_FILE" 2>/dev/null || true
-                vecho "Invoking provider_set_init_dns_records (ttl=7200) for $fqdn via $actual_registrar"
+                [ "$VERBOSE" = true ] && echo "Invoking provider_set_init_dns_records (ttl=7200) for $fqdn via $actual_registrar" > /dev/tty
                 provider_set_init_dns_records "$fqdn" "$WAN_IP" 7200 "$override_mode"
                 
                 a_root_ok=false; a_wildcard_ok=false; mx_ok=false
@@ -1206,6 +1250,7 @@ process_single_domain_init() {
             # First check happens immediately, subsequent checks use adaptive timing
             if [ "$is_first_check" = true ]; then
                 is_first_check=false
+                # First check done, now we wait - continue to calculate wait interval
             fi
             
             # Calculate next wait interval using adaptive timing
@@ -1218,12 +1263,11 @@ process_single_domain_init() {
                 [ "$wait_interval" -le 0 ] && break
             fi
             
-            # Countdown timer showing seconds remaining until timeout
+            # Countdown timer with unified format: [avg: X | next: Y | elapsed: Z | timeout: T]
             local countdown=$wait_interval
             while [ $countdown -gt 0 ]; do
-                local current_remaining=$((max_wait - elapsed - (wait_interval - countdown)))
-                # Move cursor up and update the status line
-                printf '\033[1A\r\033[K  %s: waiting... (%d/%ds remaining)\n' "$fqdn" "$current_remaining" "$max_wait" >&2
+                local current_elapsed=$((elapsed + (wait_interval - countdown)))
+                print_dns_wait_status "$fqdn" "Init DNS" "$avg_propagation" "$countdown" "$current_elapsed" "$max_wait" "tty"
                 sleep 1
                 countdown=$((countdown - 1))
             done
@@ -1232,8 +1276,8 @@ process_single_domain_init() {
         done
         
         # Timeout - update status line
-        printf '\033[1A\r\033[K  %s: \033[31mTIMEOUT\033[0m (%ds)\n' "$fqdn" "$max_wait" >&2
-        vecho "Warning: DNS propagation timed out for $fqdn" >&2
+        printf '\033[1A\r\033[K  %s: \033[31mTIMEOUT\033[0m (%ds)\n' "$fqdn" "$max_wait" > /dev/tty
+        [ "$VERBOSE" = true ] && echo "Warning: DNS propagation timed out for $fqdn" > /dev/tty
         a_root_ok=false; a_wildcard_ok=false; mx_ok=false
         LAST_DOMAIN_STATUS="timeout"
         return 1
@@ -1920,11 +1964,12 @@ wait_for_dns_propagation_parallel() {
         domain_avg_prop["$domain"]=$(get_avg_propagation_time "$ns" 2>/dev/null || echo "$DEFAULT_AVG_PROPAGATION")
     done
     
-    vecho "Checking DNS propagation for $num_domains domain(s) (timeout: ${max_wait}s)..."
+    echo "Checking DNS propagation for $num_domains domain(s) (timeout: ${max_wait}s)..." > /dev/tty
     
-    # Print initial status lines (one per domain)
+    # Print initial status lines (one per domain) - first check happens immediately
     for domain in "${domains[@]}"; do
-        echo "  $domain: waiting... (0/${max_wait}s)" >&2
+        local avg="${domain_avg_prop[$domain]}"
+        echo "  $domain: [avg: ${avg}s | elapsed: 0s | timeout: ${max_wait}s]" > /dev/tty
     done
     
     # Main loop - check all domains until all are done or timed out
@@ -1934,7 +1979,7 @@ wait_for_dns_propagation_parallel() {
         local now_ts=$(date +%s)
         
         # Move cursor up to beginning of domain status area
-        printf '\033[%dA' "$num_domains" >&2
+        printf '\033[%dA' "$num_domains" > /dev/tty
         
         local idx=0
         for domain in "${domains[@]}"; do
@@ -1942,6 +1987,7 @@ wait_for_dns_propagation_parallel() {
             local start_ts="${domain_start_ts[$domain]}"
             local elapsed=$((now_ts - start_ts))
             local remaining=$((max_wait - elapsed))
+            local avg="${domain_avg_prop[$domain]}"
             
             if [ "$status" = "pending" ]; then
                 all_done=false
@@ -1949,7 +1995,7 @@ wait_for_dns_propagation_parallel() {
                 # Check if timed out
                 if [ $remaining -le 0 ]; then
                     domain_status["$domain"]="timeout"
-                    printf '\r\033[K  %s: \033[31mTIMEOUT\033[0m (%ds)\n' "$domain" "$max_wait" >&2
+                    printf '\r\033[K  %s: \033[31mTIMEOUT\033[0m (%ds)\n' "$domain" "$max_wait" > /dev/tty
                 else
                     # Check DNS propagation (non-blocking, single check)
                     if check_init_dns_propagation_quick "$domain" "$wan_ip"; then
@@ -1966,20 +2012,18 @@ wait_for_dns_propagation_parallel() {
                         cache_delete_dns_change "$domain" "A" "*" "$wan_ip" 2>/dev/null || true
                         cache_delete_dns_change "$domain" "MX" "@" "mail.${domain}" 2>/dev/null || true
                         
-                        printf '\r\033[K  %s: \033[32mPROPAGATED\033[0m (%ds)\n' "$domain" "$elapsed" >&2
+                        printf '\r\033[K  %s: \033[32mPROPAGATED\033[0m (%ds)\n' "$domain" "$elapsed" > /dev/tty
                     else
-                        # Still pending - show countdown
-                        printf '\r\033[K  %s: waiting... (%d/%ds remaining)\n' "$domain" "$remaining" "$max_wait" >&2
+                        # Still pending - show unified format (no "next:" since checks are continuous)
+                        printf '\r\033[K  %s: [avg: %ds | elapsed: %ds | timeout: %ds]\n' "$domain" "$avg" "$elapsed" "$max_wait" > /dev/tty
                     fi
                 fi
             else
                 # Already done (propagated or timeout) - just reprint status
                 if [ "$status" = "propagated" ]; then
-                    local elapsed=$((now_ts - start_ts))
-                    # Elapsed might be more than when it propagated, use stored value
-                    printf '\r\033[K  %s: \033[32mPROPAGATED\033[0m\n' "$domain" >&2
+                    printf '\r\033[K  %s: \033[32mPROPAGATED\033[0m\n' "$domain" > /dev/tty
                 else
-                    printf '\r\033[K  %s: \033[31mTIMEOUT\033[0m (%ds)\n' "$domain" "$max_wait" >&2
+                    printf '\r\033[K  %s: \033[31mTIMEOUT\033[0m (%ds)\n' "$domain" "$max_wait" > /dev/tty
                 fi
             fi
             
@@ -2003,8 +2047,8 @@ wait_for_dns_propagation_parallel() {
         fi
     done
     
-    vecho ""
-    vecho "Propagation complete: $propagated_count propagated, $timeout_count timed out"
+    echo "" > /dev/tty
+    echo "Propagation complete: $propagated_count propagated, $timeout_count timed out" > /dev/tty
     
     # Return success if at least one propagated
     [ $propagated_count -gt 0 ] && return 0 || return 1
@@ -2052,12 +2096,14 @@ check_init_dns_propagation_quick() {
 # Function to check DNS propagation for initial DNS records (A @, A *, MX @)
 # This verifies the records set by provider_set_init_records()
 # Returns 0 if all records are propagated, 1 otherwise (single check, no loop)
+# Parameters: domain wan_ip [elapsed_seconds] [avg_propagation] [timeout]
 check_init_dns_propagation() {
     local domain="$1"
     local wan_ip="$2"
-    # Optional third parameter: elapsed seconds (for display only)
+    # Optional parameters for display
     local elapsed_seconds="${3:-0}"
-    
+    local avg_propagation="${4:-}"
+    local timeout="${5:-}"
     
     # Phase 1: Check authoritative nameserver first (avoid negative caching at Google)
     # Get the authoritative NS for this domain (cached for consistency)
@@ -2067,32 +2113,23 @@ check_init_dns_propagation() {
     # Check A record for @ (root domain) at authoritative NS
     local a_root_auth=$(dig +short @"$ns_server" "$domain" A 2>/dev/null)
     if [ -z "$a_root_auth" ] || ! echo "$a_root_auth" | grep -q "$wan_ip"; then
-        if [ "$VERBOSE" = true ]; then
-            printf '\r\033[K  [Auth NS] A @ not ready yet... (%ds)' "$elapsed_seconds" >&2
-        fi
         return 1
     fi
     
     # Check A record for wildcard at authoritative NS
     local a_wildcard_auth=$(dig +short @"$ns_server" "wildcard-test.${domain}" A 2>/dev/null)
     if [ -z "$a_wildcard_auth" ] || ! echo "$a_wildcard_auth" | grep -q "$wan_ip"; then
-        if [ "$VERBOSE" = true ]; then
-            printf '\r\033[K  [Auth NS] A * not ready yet... (%ds)' "$elapsed_seconds" >&2
-        fi
         return 1
     fi
     
     # Check MX record at authoritative NS
     local mx_auth=$(dig +short @"$ns_server" "$domain" MX 2>/dev/null)
     if [ -z "$mx_auth" ] || ! echo "$mx_auth" | grep -q "mail.${domain}"; then
-        if [ "$VERBOSE" = true ]; then
-            printf '\r\033[K  [Auth NS] MX not ready yet... (%ds)' "$elapsed_seconds" >&2
-        fi
         return 1
     fi
     
     if [ "$VERBOSE" = true ]; then
-        printf '\r\033[K  [Auth NS] All records confirmed at authoritative nameserver\n' >&2
+        echo "  [Auth NS] All records confirmed at authoritative nameserver" > /dev/tty
     fi
     
     # Phase 2: Now safe to check Google DNS for global propagation
@@ -2123,14 +2160,11 @@ check_init_dns_propagation() {
     # All records propagated
     if [ "$a_root_ok" = true ] && [ "$a_wildcard_ok" = true ] && [ "$mx_ok" = true ]; then
         if [ "$VERBOSE" = true ]; then
-            printf '\r\033[K  [Google DNS] All records propagated globally\n' >&2
+            echo "  [Google DNS] All records propagated globally" > /dev/tty
         fi
         return 0  # Success
     fi
     
-    if [ "$VERBOSE" = true ]; then
-        printf '\r\033[K  [Google DNS] Waiting for global propagation... (%ds)' "$elapsed_seconds" >&2
-    fi
     return 1
 }
 
@@ -2157,7 +2191,8 @@ check_dns_propagation() {
     first_check_ts=$(cache_get_dns_change "$domain" "TXT" "_acme-challenge" "$expected_value" 2>/dev/null) || first_check_ts=$(date +%s)
     
     echo "Waiting for ACME TXT record propagation (timeout: ${max_wait}s)..." > /dev/tty
-    echo "  $domain: waiting... (0/${max_wait}s remaining)" > /dev/tty
+    # First check happens immediately - show initial line without "next:"
+    echo "  $domain: [Auth NS] checking..." > /dev/tty
     
     local is_first_check=true
     
@@ -2171,6 +2206,7 @@ check_dns_propagation() {
             # First check happens immediately, subsequent checks use adaptive timing
             if [ "$is_first_check" = true ]; then
                 is_first_check=false
+                # First check done, now we wait
             fi
             
             # Calculate next wait interval using adaptive timing
@@ -2183,11 +2219,11 @@ check_dns_propagation() {
                 [ "$wait_interval" -le 0 ] && break
             fi
             
-            # Countdown timer showing seconds remaining until timeout
+            # Countdown timer with unified format: [avg: X | next: Y | elapsed: Z | timeout: T]
             local countdown=$wait_interval
             while [ $countdown -gt 0 ]; do
-                local current_remaining=$((max_wait - elapsed - (wait_interval - countdown)))
-                printf '\033[1A\r\033[K  %s: [Auth NS] waiting... (%d/%ds remaining)\n' "$domain" "$current_remaining" "$max_wait" > /dev/tty
+                local current_elapsed=$((elapsed + (wait_interval - countdown)))
+                print_dns_wait_status "$domain" "Auth NS" "$avg_propagation" "$countdown" "$current_elapsed" "$max_wait" "tty"
                 sleep 1
                 countdown=$((countdown - 1))
             done
@@ -2232,11 +2268,11 @@ check_dns_propagation() {
             [ "$wait_interval" -le 0 ] && break
         fi
         
-        # Countdown timer showing seconds remaining until timeout
+        # Countdown timer with unified format: [avg: X | next: Y | elapsed: Z | timeout: T]
         local countdown=$wait_interval
         while [ $countdown -gt 0 ]; do
-            local current_remaining=$((max_wait - elapsed - (wait_interval - countdown)))
-            printf '\033[1A\r\033[K  %s: [Global] waiting... (%d/%ds remaining)\n' "$domain" "$current_remaining" "$max_wait" > /dev/tty
+            local current_elapsed=$((elapsed + (wait_interval - countdown)))
+            print_dns_wait_status "$domain" "Global" "$avg_propagation" "$countdown" "$current_elapsed" "$max_wait" "tty"
             sleep 1
             countdown=$((countdown - 1))
         done
