@@ -331,7 +331,8 @@ get_avg_propagation_time() {
 }
 
 # Calculate next wait interval using adaptive timing algorithm
-# Formula: max(MIN_CHECK_INTERVAL, (avg_propagation + first_check_ts - current_ts) / 2)
+# Formula: max(MIN_CHECK_INTERVAL, (avg - elapsed) / 2)
+#   where elapsed = current_ts - first_check_ts
 # Usage: calculate_next_wait <ns_server> <first_check_ts>
 # Returns: seconds to wait before next check
 calculate_next_wait() {
@@ -343,7 +344,7 @@ calculate_next_wait() {
     local avg_propagation
     avg_propagation=$(get_avg_propagation_time "$ns_server")
     
-    # Calculate: (avg_propagation + first_check_ts - now_ts) / 2
+    # Calculate: (avg - elapsed) / 2 = (avg_propagation - (now_ts - first_check_ts)) / 2
     local remaining=$((avg_propagation + first_check_ts - now_ts))
     local next_wait=$((remaining / 2))
     
@@ -2256,17 +2257,18 @@ check_dns_propagation() {
             if echo "$response" | grep -q "$expected_value"; then
                 printf '  %s: [Google] \033[32mPROPAGATED\033[0m (%ds)\n' "$domain" "$elapsed" > /dev/tty
                 
+                # Calculate actual propagation time and update average BEFORE buffer
+                # The buffer time should NOT be counted in the average calculation
+                local now_ts
+                now_ts=$(date +%s)
+                local actual_propagation=$((now_ts - first_check_ts))
+                update_avg_propagation_time "$ns_server" "$actual_propagation"
+                
                 # Buffer to allow other DNS resolvers (Let's Encrypt) to catch up
                 local buffer=${DNS_PROPAGATION_BUFFER:-10}
                 printf '  %s: [Buffer] waiting %ds for global DNS sync...\n' "$domain" "$buffer" > /dev/tty
                 sleep "$buffer"
                 printf '  %s: [Buffer] done\n' "$domain" > /dev/tty
-                
-                # Calculate actual propagation time and update average
-                local now_ts
-                now_ts=$(date +%s)
-                local actual_propagation=$((now_ts - first_check_ts))
-                update_avg_propagation_time "$ns_server" "$actual_propagation"
                 
                 # Clean up DNS change tracking entry
                 cache_delete_dns_change "$domain" "TXT" "_acme-challenge" "$expected_value"

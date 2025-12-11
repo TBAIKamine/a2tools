@@ -14,6 +14,7 @@ COMMANDS=(
 	"fqdncredmgr"
 	"a2wcrecalc"
 	"a2wcrecalc-dms"
+	"a2certrenew"
 )
 for cmd in "${COMMANDS[@]}"; do
 	rm -dfr -- "/usr/local/bin/${cmd}" || true
@@ -32,5 +33,7 @@ rm -dfr -- /etc/fqdnmgr || true
 rm -dfr -- /etc/fqdntools || true
 rm -dfr -- /var/log/fqdnmgr || true
 rm -dfr /etc/cron.weekly/fqdnmgr_domain_cleanup || true
+rm -dfr /etc/cron.daily/a2certrenew || true
+rm -dfr -- /var/log/a2certrenew.log || true
 rm -dfr -- /tmp/a2tools.cache || true
 exit 0

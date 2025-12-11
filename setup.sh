@@ -9,6 +9,7 @@ COMMANDS=(
     "fqdncredmgr"
     "a2wcrecalc"
     "a2wcrecalc-dms"
+    "a2certrenew"
 )
 
 # Create symlinks and set permissions for each command
@@ -82,4 +83,13 @@ fi
 if [ -f /etc/cron.weekly/fqdnmgr_domain_cleanup ]; then
     chmod 0755 /etc/cron.weekly/fqdnmgr_domain_cleanup || true
     chown root:root /etc/cron.weekly/fqdnmgr_domain_cleanup || true
+fi
+
+# Install daily certificate renewal cron job (Ubuntu: /etc/cron.daily)
+if [ -f /usr/local/bin/a2certrenew.d/cron.a2certrenew ]; then
+    cp /usr/local/bin/a2certrenew.d/cron.a2certrenew /etc/cron.daily/a2certrenew 2>/dev/null || true
+fi
+if [ -f /etc/cron.daily/a2certrenew ]; then
+    chmod 0755 /etc/cron.daily/a2certrenew || true
+    chown root:root /etc/cron.daily/a2certrenew || true
 fi

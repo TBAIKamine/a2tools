@@ -700,6 +700,16 @@ do_config
             fi
             exit 1
         fi
+        
+        # Certificate successfully issued - update cert_date in database
+        CERT_ISSUE_DATE=$(date '+%Y-%m-%d')
+        if [ -f "/etc/fqdntools/domains.db" ]; then
+            sqlite3 /etc/fqdntools/domains.db \
+                "INSERT OR REPLACE INTO domains (domain, status, registrar, cert_date) 
+                 VALUES ('$CERT_DOMAIN', 'owned', '$REGISTRAR', '$CERT_ISSUE_DATE')
+                 ON CONFLICT(domain) DO UPDATE SET cert_date = '$CERT_ISSUE_DATE';" 2>/dev/null || true
+            vecho "Updated cert_date to $CERT_ISSUE_DATE for $CERT_DOMAIN"
+        fi
     fi
 }
 
