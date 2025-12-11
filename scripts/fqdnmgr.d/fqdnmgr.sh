@@ -912,6 +912,107 @@ has_local_certificate() {
     return 1
 }
 
+# Helper: parse certbot certificates output to get certificate information
+# Returns a list of: domain|issue_date|expiry_date
+# Format: YYYY-MM-DD for both dates
+parse_certbot_certificates() {
+    if ! command -v certbot >/dev/null 2>&1; then
+        return 1
+    fi
+    
+    local certbot_output
+    certbot_output=$(certbot certificates 2>/dev/null || true)
+    
+    if [ -z "$certbot_output" ]; then
+        return 1
+    fi
+    
+    # Parse the certbot output
+    # certbot certificates output format example:
+    # Certificate Name: example.com
+    #   Domains: example.com
+    #   Expiry Date: 2024-03-15 12:34:56+00:00 (VALID: 89 days)
+    
+    local current_domain=""
+    local current_expiry=""
+    
+    while IFS= read -r line; do
+        if echo "$line" | grep -q "Certificate Name:"; then
+            current_domain=$(echo "$line" | sed 's/.*Certificate Name: //' | tr -d ' ')
+        elif echo "$line" | grep -q "Expiry Date:"; then
+            # Extract date in format YYYY-MM-DD HH:MM:SS
+            current_expiry=$(echo "$line" | sed 's/.*Expiry Date: //' | awk '{print $1}')
+            
+            if [ -n "$current_domain" ] && [ -n "$current_expiry" ]; then
+                # Calculate issue date (typically 90 days before expiry for Let's Encrypt)
+                # Use date command to subtract 90 days from expiry
+                local issue_date
+                if date --version 2>&1 | grep -q "GNU"; then
+                    # GNU date
+                    issue_date=$(date -d "$current_expiry - 90 days" +%Y-%m-%d 2>/dev/null || echo "")
+                else
+                    # BSD/macOS date
+                    issue_date=$(date -v-90d -j -f "%Y-%m-%d" "$current_expiry" +%Y-%m-%d 2>/dev/null || echo "")
+                fi
+                
+                if [ -n "$issue_date" ]; then
+                    echo "$current_domain|$issue_date|$current_expiry"
+                fi
+                
+                current_domain=""
+                current_expiry=""
+            fi
+        fi
+    done <<< "$certbot_output"
+    
+    return 0
+}
+
+# Helper: check if DNS has been initialized for a domain
+# Returns 0 if DNS is properly initialized, 1 otherwise
+check_domain_dns_initialized() {
+    local domain="$1"
+    local wan_ip="$2"
+    
+    # Use the existing quick check function
+    if check_init_dns_propagation_quick "$domain" "$wan_ip" 2>/dev/null; then
+        return 0
+    fi
+    
+    return 1
+}
+
+# Helper: update domain certificate and DNS information in database
+# Usage: update_domain_cert_dns_info DOMAIN CERT_DATE DNS_INIT
+update_domain_cert_dns_info() {
+    local domain="$1"
+    local cert_date="$2"  # YYYY-MM-DD or empty
+    local dns_init="$3"   # 1 for initialized, 0 for not, empty to skip
+    
+    ensure_domains_db
+    
+    # Build the SQL update statement dynamically
+    local sql_updates=()
+    
+    if [ -n "$cert_date" ]; then
+        sql_updates+=("cert_date='$cert_date'")
+    fi
+    
+    if [ -n "$dns_init" ]; then
+        sql_updates+=("dns_init=$dns_init")
+    fi
+    
+    if [ ${#sql_updates[@]} -eq 0 ]; then
+        return 0
+    fi
+    
+    # Join updates with commas
+    local update_clause=$(IFS=,; echo "${sql_updates[*]}")
+    
+    # Update the domain if it exists
+    sqlite3 "$DOMAINS_DB_PATH" "UPDATE domains SET $update_clause WHERE domain='$domain';" 2>/dev/null || true
+}
+
 # Helper: get WHOIS info for a domain
 # Fetches WHOIS, parses it, and caches only the extracted values (1h TTL):
 #   - whois_registrar: normalized registrar name
@@ -2422,6 +2523,8 @@ list() {
             return 0
         fi
 
+        # Collect all active domains for later processing
+        local active_domains=()
         local idx=1
         while IFS='|' read -r domain status; do
             [ -z "$domain" ] && continue
@@ -2429,6 +2532,7 @@ list() {
             # Only persist when status == active (user requirement)
             if [ "$status" = "active" ]; then
                 save_domain_status "$domain" "owned" "$registrar_norm"
+                active_domains+=("$domain")
             fi
 
             if [ "$VERBOSE" = true ]; then
@@ -2438,6 +2542,49 @@ list() {
             fi
             idx=$((idx + 1))
         done <<< "$lines"
+
+        # After fetching all domains, update certificate and DNS information
+        if [ ${#active_domains[@]} -gt 0 ]; then
+            vecho "Checking certificate and DNS status for domains..."
+            
+            # Parse certbot certificates output
+            local cert_info
+            cert_info=$(parse_certbot_certificates 2>/dev/null || true)
+            
+            # Create associative arrays for certificate dates
+            declare -A cert_dates
+            if [ -n "$cert_info" ]; then
+                while IFS='|' read -r cert_domain issue_date expiry_date; do
+                    [ -z "$cert_domain" ] && continue
+                    cert_dates["$cert_domain"]="$issue_date"
+                done <<< "$cert_info"
+            fi
+            
+            # Check each domain for certificate and DNS status
+            for domain in "${active_domains[@]}"; do
+                # Check if domain has certificate
+                local cert_date=""
+                if [ -n "${cert_dates[$domain]}" ]; then
+                    cert_date="${cert_dates[$domain]}"
+                    vecho "  $domain: certificate issued on $cert_date"
+                fi
+                
+                # Check if DNS is initialized
+                local dns_init=""
+                if check_domain_dns_initialized "$domain" "$WAN_IP" 2>/dev/null; then
+                    dns_init="1"
+                    vecho "  $domain: DNS initialized"
+                else
+                    dns_init="0"
+                    vecho "  $domain: DNS not initialized"
+                fi
+                
+                # Update database with certificate and DNS information
+                if [ -n "$cert_date" ] || [ -n "$dns_init" ]; then
+                    update_domain_cert_dns_info "$domain" "$cert_date" "$dns_init"
+                fi
+            done
+        fi
 
         return 0
     fi
@@ -2491,6 +2638,49 @@ list() {
             echo "$domain"
         fi
         idx=$((idx + 1))
+    done <<< "$domains"
+
+    # After fetching all domains, update certificate and DNS information
+    vecho "Checking certificate and DNS status for domains..."
+    
+    # Parse certbot certificates output
+    local cert_info
+    cert_info=$(parse_certbot_certificates 2>/dev/null || true)
+    
+    # Create associative arrays for certificate dates
+    declare -A cert_dates
+    if [ -n "$cert_info" ]; then
+        while IFS='|' read -r cert_domain issue_date expiry_date; do
+            [ -z "$cert_domain" ] && continue
+            cert_dates["$cert_domain"]="$issue_date"
+        done <<< "$cert_info"
+    fi
+    
+    # Check each domain for certificate and DNS status
+    while IFS= read -r domain; do
+        [ -z "$domain" ] && continue
+        
+        # Check if domain has certificate
+        local cert_date=""
+        if [ -n "${cert_dates[$domain]}" ]; then
+            cert_date="${cert_dates[$domain]}"
+            vecho "  $domain: certificate issued on $cert_date"
+        fi
+        
+        # Check if DNS is initialized
+        local dns_init=""
+        if check_domain_dns_initialized "$domain" "$WAN_IP" 2>/dev/null; then
+            dns_init="1"
+            vecho "  $domain: DNS initialized"
+        else
+            dns_init="0"
+            vecho "  $domain: DNS not initialized"
+        fi
+        
+        # Update database with certificate and DNS information
+        if [ -n "$cert_date" ] || [ -n "$dns_init" ]; then
+            update_domain_cert_dns_info "$domain" "$cert_date" "$dns_init"
+        fi
     done <<< "$domains"
 
     return 0
