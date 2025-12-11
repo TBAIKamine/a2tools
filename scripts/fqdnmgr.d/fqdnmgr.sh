@@ -64,7 +64,7 @@ CACHE_TTL_AP=-1           # Never expires (average propagation time)
 DEFAULT_AVG_PROPAGATION=120  # 2 minutes
 
 # Minimum interval between propagation checks (seconds)
-MIN_CHECK_INTERVAL=2
+MIN_CHECK_INTERVAL=10
 
 # Garbage collection: remove expired entries from centralized cache
 cleanup_expired_cache() {
@@ -143,7 +143,7 @@ cache_set() {
     # Remove old entry for this type+domain, then append new one
     if [ -f "$A2TOOLS_CACHE_FILE" ]; then
         local tmp_file="${A2TOOLS_CACHE_FILE}.tmp"
-        grep -v "^${type} ${domain} " "$A2TOOLS_CACHE_FILE" > "$tmp_file" 2>/dev/null || true
+        grep -v -- "^${type} ${domain} " "$A2TOOLS_CACHE_FILE" > "$tmp_file" 2>/dev/null || true
         mv -f "$tmp_file" "$A2TOOLS_CACHE_FILE" 2>/dev/null || true
     fi
     echo "$type $domain $value $now_ts" >> "$A2TOOLS_CACHE_FILE" 2>/dev/null || true
@@ -205,7 +205,7 @@ cache_set_dns_change() {
     # Remove old entry for this key, then append new one
     if [ -f "$A2TOOLS_CACHE_FILE" ]; then
         local tmp_file="${A2TOOLS_CACHE_FILE}.tmp"
-        grep -v "^dns_change ${cache_key} " "$A2TOOLS_CACHE_FILE" > "$tmp_file" 2>/dev/null || true
+        grep -v -- "^dns_change ${cache_key} " "$A2TOOLS_CACHE_FILE" > "$tmp_file" 2>/dev/null || true
         mv -f "$tmp_file" "$A2TOOLS_CACHE_FILE" 2>/dev/null || true
     fi
     # Store: dns_change <key> <set_timestamp> <cache_timestamp>
@@ -257,7 +257,7 @@ cache_delete_dns_change() {
     [ -f "$A2TOOLS_CACHE_FILE" ] || return 0
     
     local tmp_file="${A2TOOLS_CACHE_FILE}.tmp"
-    grep -v "^dns_change ${cache_key} " "$A2TOOLS_CACHE_FILE" > "$tmp_file" 2>/dev/null || true
+    grep -v -- "^dns_change ${cache_key} " "$A2TOOLS_CACHE_FILE" > "$tmp_file" 2>/dev/null || true
     mv -f "$tmp_file" "$A2TOOLS_CACHE_FILE" 2>/dev/null || true
 }
 
@@ -294,7 +294,7 @@ cache_set_ap() {
     # Remove old entry for this NS, then append new one
     if [ -f "$A2TOOLS_CACHE_FILE" ]; then
         local tmp_file="${A2TOOLS_CACHE_FILE}.tmp"
-        grep -v "^ap ${ns_server} " "$A2TOOLS_CACHE_FILE" > "$tmp_file" 2>/dev/null || true
+        grep -v -- "^ap ${ns_server} " "$A2TOOLS_CACHE_FILE" > "$tmp_file" 2>/dev/null || true
         mv -f "$tmp_file" "$A2TOOLS_CACHE_FILE" 2>/dev/null || true
     fi
     echo "ap $ns_server $avg_seconds $now_ts" >> "$A2TOOLS_CACHE_FILE" 2>/dev/null || true
