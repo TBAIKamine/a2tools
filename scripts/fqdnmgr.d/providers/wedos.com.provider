@@ -4,6 +4,9 @@
 PROVIDER_NAME="wedos.com"
 PROVIDER_API_BASE="https://api.wedos.com/wapi/json"
 
+# DNS propagation buffer (seconds to wait after Google DNS confirms)
+DNS_PROPAGATION_BUFFER=60
+
 ## Expects `PROVIDER_USERNAME` and `PROVIDER_API_KEY` to be exported by the caller (provided by the credentials daemon)
 # Rate limiting (Wedos: 1000/hour)
 RATE_LIMIT_HOUR=1000

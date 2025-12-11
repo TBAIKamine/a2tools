@@ -793,6 +793,16 @@ certify() {
     local registrar="$1"
     init_provider_for_dns_operation "$registrar" "certify"
     
+    # Calculate challenge progress from certbot environment variables
+    # CERTBOT_ALL_DOMAINS: comma-separated list of all domains
+    # CERTBOT_REMAINING_CHALLENGES: number of remaining challenges after this one
+    if [ "$VERBOSE" = true ] && [ -n "$CERTBOT_ALL_DOMAINS" ]; then
+        local total_challenges=$(echo "$CERTBOT_ALL_DOMAINS" | tr ',' '\n' | wc -l | tr -d ' ')
+        local remaining=${CERTBOT_REMAINING_CHALLENGES:-0}
+        local current_challenge=$((total_challenges - remaining))
+        echo "=== ACME Challenge $current_challenge of $total_challenges: $CERTBOT_DOMAIN ===" > /dev/tty
+    fi
+    
     # Check if TXT record already exists at authoritative NS
     # This prevents false re-setting which would corrupt propagation timing data
     local ns_server
@@ -2199,7 +2209,7 @@ check_dns_propagation() {
     while [ $elapsed -lt $max_wait ]; do
         local remaining=$((max_wait - elapsed))
         
-        # Phase 1: Check authoritative nameserver first (avoid negative caching)
+        # Check authoritative nameserver first (avoid negative caching)
         local auth_txt=$(dig +short @"$ns_server" "$acme_domain" TXT 2>/dev/null | tr -d '"')
         
         if [ -z "$auth_txt" ] || ! echo "$auth_txt" | grep -q "$expected_value"; then
@@ -2233,17 +2243,24 @@ check_dns_propagation() {
         fi
         
         if [ "$ns_propagated" = false ]; then
-            printf '\033[1A\r\033[K  %s: [Auth NS] confirmed, checking global...\n' "$domain" > /dev/tty
+            printf '  %s: [Auth NS] confirmed, checking [Google]...\n' "$domain" > /dev/tty
             ns_propagated=true
         fi
         
-        # Phase 2: Now safe to check Google DNS for global propagation
+        # Check Google DNS (8.8.8.8) for global propagation
         local response=$(dig +short @8.8.8.8 "${acme_domain}" TXT 2>/dev/null | tr -d '"')
+        local dig_exit=$?
         
-        if [ $? -eq 0 ] && [ -n "$response" ]; then
+        if [ $dig_exit -eq 0 ] && [ -n "$response" ]; then
             # Check if the expected value is in the response
             if echo "$response" | grep -q "$expected_value"; then
-                printf '\033[1A\r\033[K  %s: \033[32mPROPAGATED\033[0m (%ds)\n' "$domain" "$elapsed" > /dev/tty
+                printf '  %s: [Google] \033[32mPROPAGATED\033[0m (%ds)\n' "$domain" "$elapsed" > /dev/tty
+                
+                # Buffer to allow other DNS resolvers (Let's Encrypt) to catch up
+                local buffer=${DNS_PROPAGATION_BUFFER:-10}
+                printf '  %s: [Buffer] waiting %ds for global DNS sync...\n' "$domain" "$buffer" > /dev/tty
+                sleep "$buffer"
+                printf '  %s: [Buffer] done\n' "$domain" > /dev/tty
                 
                 # Calculate actual propagation time and update average
                 local now_ts
@@ -2280,7 +2297,7 @@ check_dns_propagation() {
         elapsed=$((elapsed + wait_interval))
     done
     
-    printf '\033[1A\r\033[K  %s: \033[31mTIMEOUT\033[0m (%ds)\n' "$domain" "$max_wait" > /dev/tty
+    printf '  %s: \033[31mTIMEOUT\033[0m (%ds)\n' "$domain" "$max_wait" > /dev/tty
     return 1  # Timeout - DNS did not propagate within max_wait
 }
 

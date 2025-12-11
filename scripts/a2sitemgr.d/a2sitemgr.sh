@@ -415,6 +415,12 @@ if [ "$MODE" = "domain" ]; then
 
     FQDN_BASE="${FQDN%%.*}"
     CERT_DOMAIN="$FQDN"
+    
+    # For non-.com TLDs, include the TLD in the config filename
+    if [[ ! "$FQDN" =~ \.com$ ]]; then
+        TLD="${FQDN##*.}"
+        FQDN_BASE="${FQDN_BASE}.${TLD}"
+    fi
 
 elif [ "$MODE" = "proxypass" ]; then
     # Validate FQDN for proxypass (should be subdomain.base)
@@ -646,7 +652,7 @@ do_config
                 --preferred-challenges dns \
                 --manual-auth-hook "$CERTBOT_AUTH_HOOK" \
                 --manual-cleanup-hook "$CERTBOT_CLEANUP_HOOK" \
-                --issuance-timeout 600 \
+                --issuance-timeout 3600 \
                 certonly
             CERTBOT_EXIT=$?
             CERTBOT_OUTPUT=""  # No captured output in verbose mode

@@ -5,6 +5,9 @@
 PROVIDER_NAME="namecheap.com"
 PROVIDER_API_BASE="https://api.namecheap.com/xml.response"
 
+# DNS propagation buffer (seconds to wait after Google DNS confirms)
+DNS_PROPAGATION_BUFFER=3
+
 # Rate limiting configuration
 # Namecheap limits: 50/min, 700/hour, 8000/day
 RATE_LIMIT_MINUTE=50
