@@ -8,6 +8,9 @@
         SSLCertificateKeyFile /etc/letsencrypt/live/{{CERT_DOMAIN}}/privkey.pem
         SSLProxyEngine On
         SSLProxyVerify none
+        SSLProxyCheckPeerCN off
+        SSLProxyCheckPeerName off
+        SSLProxyCheckPeerExpire off
         ProxyPreserveHost On
         ProxyPass / {{PROXY_PROTOCOL}}://localhost:{{PROXY_PORT}}/
         ProxyPassReverse / {{PROXY_PROTOCOL}}://localhost:{{PROXY_PORT}}/

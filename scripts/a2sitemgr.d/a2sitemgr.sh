@@ -58,6 +58,47 @@ SET_INIT_DNS_SYNC=false
 # Verbose echo - only prints when VERBOSE=true
 vecho() { [ "$VERBOSE" = true ] && echo "$@" || true; }
 
+# Get next available config number for a given prefix (0 for swc, 1 for proxypass)
+# Usage: get_next_config_number <prefix> <name>
+# Returns the full filename: prefix-NNNN-name.conf
+get_next_config_number() {
+    local prefix="$1"
+    local name="$2"
+    local config_dir="/etc/apache2/sites-available"
+    
+    # Check if a config with this name already exists (any number)
+    local existing=$(ls -1 "$config_dir"/${prefix}-????-${name}.conf 2>/dev/null | head -n1)
+    if [ -n "$existing" ]; then
+        # Return the existing filename (basename only)
+        basename "$existing"
+        return 0
+    fi
+    
+    # Collect all existing numbers for this prefix
+    declare -A used_numbers
+    for file in "$config_dir"/${prefix}-????-*.conf; do
+        [ -f "$file" ] || continue
+        local num=$(basename "$file" | sed -E 's/^[0-9]-([0-9]{4})-.*\.conf$/\1/')
+        if [[ "$num" =~ ^[0-9]{4}$ ]]; then
+            used_numbers["$num"]=1
+        fi
+    done
+    
+    # Find the first available number (filling gaps)
+    local next_num=0
+    while [ $next_num -le 9999 ]; do
+        local padded=$(printf "%04d" $next_num)
+        if [[ ! -v used_numbers[$padded] ]]; then
+            echo "${prefix}-${padded}-${name}.conf"
+            return 0
+        fi
+        ((next_num++))
+    done
+    
+    echo "Error: No available config numbers for prefix $prefix" >&2
+    return 1
+}
+
 # helper functions
 handle_fqdnmgr_error() {
     local exit_code="$1"
@@ -110,12 +151,22 @@ check_prerequisites() {
         required_modules="$required_modules proxy proxy_http"
     fi
     
-    for module in $required_modules; do
-        if ! apache2ctl -M 2>/dev/null | grep -q "${module}_module"; then
-            echo "Warning: Apache module 'mod_$module' does not appear to be enabled" >&2
-            echo "You may need to run: a2enmod $module" >&2
-        fi
-    done
+    # Get loaded modules list (may fail if Apache config has errors)
+    local loaded_modules
+    loaded_modules=$(apache2ctl -M 2>/dev/null)
+    local modules_check_failed=$?
+    
+    if [ $modules_check_failed -ne 0 ] || [ -z "$loaded_modules" ]; then
+        echo "Warning: Could not verify Apache modules (apache2ctl -M failed - likely a config error exists)" >&2
+        echo "Run 'apache2ctl configtest' to diagnose configuration issues" >&2
+    else
+        for module in $required_modules; do
+            if ! echo "$loaded_modules" | grep -q "${module}_module"; then
+                echo "Warning: Apache module 'mod_$module' does not appear to be enabled" >&2
+                echo "You may need to run: a2enmod $module" >&2
+            fi
+        done
+    fi
 }
 render_from_template_to_path() {
     local tpl="$1"; local target="$2"; local timeout="${3:-10}"
@@ -201,16 +252,18 @@ do_config(){
             exit 1
         fi
 
-        CONF="/etc/apache2/sites-available/${SUBDOMAIN}.conf"
+        # Get config filename with 0-XXXX prefix for swc mode
+        CONF_FILENAME=$(get_next_config_number "0" "$SUBDOMAIN")
+        CONF="/etc/apache2/sites-available/${CONF_FILENAME}"
         render_from_template_to_path "$SCRIPT_DIR/swc_min.conf.tpl" "$CONF" 10
 
         vecho "Created subdomain wildcard config: $CONF"
 
         if command -v a2wcrecalc >/dev/null 2>&1; then
             vecho "Calling a2wcrecalc $SUBDOMAIN..."
-            a2wcrecalc "$SUBDOMAIN"
+            a2wcrecalc "$SUBDOMAIN.*"
         else
-            echo "Warning: a2wcrecalc not found. Please run it manually: a2wcrecalc $SUBDOMAIN" >&2
+            echo "Warning: a2wcrecalc not found. Please run it manually: a2wcrecalc $SUBDOMAIN.*" >&2
         fi
 
         if command -v a2wcrecalc-dms >/dev/null 2>&1; then
@@ -231,7 +284,9 @@ do_config(){
             chown -R www-data:www-data "/var/www/$CERT_DOMAIN"
         fi
 
-        CONF="/etc/apache2/sites-available/${FQDN_BASE}.conf"
+        # Get config filename with 1-XXXX prefix for proxypass mode
+        CONF_FILENAME=$(get_next_config_number "1" "$FQDN_BASE")
+        CONF="/etc/apache2/sites-available/${CONF_FILENAME}"
         render_from_template_to_path "$SCRIPT_DIR/init_proxypass.conf.tpl" "$CONF" 10
         return 0
     fi
@@ -512,7 +567,7 @@ fi
                 fi
             else
                 # Get status and registrar from fqdnmgr output (preserve newlines with quotes)
-                echo "$FQDNMGR_OUTPUT"
+                vecho "$FQDNMGR_OUTPUT"
                 STATUS_VAL=$(echo "$FQDNMGR_OUTPUT" | grep -oE 'status=[^ ]+' | cut -d= -f2)
                 REGISTRAR_VAL=$(echo "$FQDNMGR_OUTPUT" | grep -oE 'registrar=[^ ]+' | cut -d= -f2)
 
@@ -715,16 +770,26 @@ do_config
 
 # STEP 4: Finalize Apache configuration
 {
-    if [ "$MODE" = "domain" ]; then
-        # Remove DocumentRoot and ServerAlias lines from apache config (combine sed operations)
-        sed -i -e '/DocumentRoot/d' -e '/ServerAlias/d' /etc/apache2/sites-available/"$FQDN_BASE".conf
-    fi
+    # Get config filename based on mode (CONF is set in do_config)
+    CONF_BASENAME=$(basename "$CONF")
     
-    # For all remaining modes: Add HTTPS redirect to the existing <VirtualHost *:80> block
-    sed -i '/<VirtualHost \*:80>/a\
+    if [ "$MODE" = "domain" ]; then
+        # Remove DocumentRoot line from apache config (keep ServerAlias for wildcard support)
+        sed -i '/DocumentRoot/d' "$CONF"
+        
+        # Add HTTPS redirect after ServerAlias to keep ServerName at top
+        sed -i '/ServerAlias/a\
     RewriteEngine On\
     RewriteCond %{HTTPS} !=on\
-    RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]' /etc/apache2/sites-available/"$FQDN_BASE".conf
+    RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]' "$CONF"
+    else
+        # For proxypass mode: Add HTTPS redirect after ServerName
+        sed -i '/<VirtualHost \*:80>/,/<\/VirtualHost>/{/ServerName/a\
+    RewriteEngine On\
+    RewriteCond %{HTTPS} !=on\
+    RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+}' "$CONF"
+    fi
     
     # Add SSL VirtualHost directives
     if [ "$MODE" = "domain" ]; then
@@ -732,7 +797,7 @@ do_config
         sed \
             -e "s|{{FQDN}}|$FQDN|g" \
             -e "s|{{FQDN_BASE}}|$FQDN_BASE|g" \
-            "$SCRIPT_DIR/ssl_standard.conf.tpl" >> /etc/apache2/sites-available/"$FQDN_BASE".conf
+            "$SCRIPT_DIR/ssl_standard.conf.tpl" >> "$CONF"
     elif [ "$MODE" = "proxypass" ]; then
         # Use wildcard certificates from base domain - no DocumentRoot for proxypass
         sed \
@@ -742,20 +807,23 @@ do_config
             -e "s|{{CERT_DOMAIN}}|$CERT_DOMAIN|g" \
             -e "s|{{PROXY_PROTOCOL}}|$PROXY_PROTOCOL|g" \
             -e "s|{{PROXY_PORT}}|$PROXY_PORT|g" \
-            "$SCRIPT_DIR/ssl_proxypass.conf.tpl" >> /etc/apache2/sites-available/"$FQDN_BASE".conf
+            "$SCRIPT_DIR/ssl_proxypass.conf.tpl" >> "$CONF"
     fi
 
-    # Test Apache configuration before enabling
-    if ! apache2ctl configtest 2>/dev/null; then
-        echo "Error: Apache configuration test failed. Check your config with: apache2ctl configtest" >&2
+    # Test Apache configuration before enabling (filter out harmless AH00558 warning)
+    CONFIGTEST_OUTPUT=$(sudo apache2ctl configtest 2>&1 | grep -v "AH00558")
+    CONFIGTEST_EXIT=${PIPESTATUS[0]}
+    if [ $CONFIGTEST_EXIT -ne 0 ]; then
+        echo "Error: Apache configuration test failed:" >&2
+        echo "$CONFIGTEST_OUTPUT" >&2
         exit 1
     fi
 
     # Enable site and reload Apache with error handling
-    if a2ensite "$FQDN_BASE".conf >/dev/null 2>&1; then
-        vecho "Successfully enabled site: $FQDN_BASE"
+    if a2ensite "$CONF_BASENAME" >/dev/null 2>&1; then
+        vecho "Successfully enabled site: $CONF_BASENAME"
     else
-        echo "Error: Failed to enable site $FQDN_BASE" >&2
+        echo "Error: Failed to enable site $CONF_BASENAME" >&2
         exit 1
     fi
 

@@ -33,8 +33,9 @@ for config_file in /etc/apache2/sites-available/*.conf; do
         # Remove leading/trailing whitespace and get ServerName value
         server_name=$(echo "$line" | awk '{print $2}')
         
-        # Skip if empty or contains wildcard
-        if [ -n "$server_name" ] && [[ ! "$server_name" =~ \* ]]; then
+        # Skip if empty, contains wildcard, or is a subdomain (more than one dot)
+        dot_count=$(echo "$server_name" | tr -cd '.' | wc -c)
+        if [ -n "$server_name" ] && [[ ! "$server_name" =~ \* ]] && [ "$dot_count" -eq 1 ]; then
             server_names["$server_name"]=1
         fi
     done < <(grep -i "^[[:space:]]*ServerName" "$config_file")
@@ -63,7 +64,8 @@ output_file="$DMS_DIR/docker-data/dms/config/sni_cert_map"
 if [ -n "$sni_map_content" ]; then
     echo "$sni_map_content" > "$output_file"
     echo "SNI certificate map saved to: $output_file"
-    echo "Total domains mapped: $(echo "$sni_map_content" | wc -l | tr -d ' ')"
+    count=$(printf '%s' "$sni_map_content" | grep -cve '^[[:space:]]*$')
+    echo "Total domains mapped: $count"
 else
     echo "No valid domains found with certificates."
     exit 0
