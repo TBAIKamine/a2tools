@@ -2301,7 +2301,7 @@ check_dns_propagation() {
     # Check if we already have a DNS change timestamp (script restart scenario)
     local first_check_ts
     first_check_ts=$(cache_get_dns_change "$domain" "TXT" "_acme-challenge" "$expected_value" 2>/dev/null) || first_check_ts=$(date +%s)
-    
+    echo > /dev/tty
     echo "Waiting for ACME TXT record propagation (timeout: ${max_wait}s)..." > /dev/tty
     # First check happens immediately - show initial line without "next:"
     echo "  $domain: [Auth NS] checking..." > /dev/tty
@@ -2370,6 +2370,7 @@ check_dns_propagation() {
                 printf '  %s: [Buffer] waiting %ds for global DNS sync...\n' "$domain" "$buffer" > /dev/tty
                 sleep "$buffer"
                 printf '  %s: [Buffer] done\n' "$domain" > /dev/tty
+                echo > /dev/tty
                 
                 # Clean up DNS change tracking entry
                 cache_delete_dns_change "$domain" "TXT" "_acme-challenge" "$expected_value"
