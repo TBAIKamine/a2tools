@@ -234,6 +234,11 @@ do_config(){
 
         CONF="/etc/apache2/sites-available/${FQDN_BASE}.conf"
         render_from_template_to_path "$SCRIPT_DIR/init_standard.conf.tpl" "$CONF" 10
+        if command -v a2wcrecalc-dms >/dev/null 2>&1; then
+            vecho "Calling a2wcrecalc-dms..."
+            a2wcrecalc-dms
+        fi
+
         return 0
     fi
 
@@ -264,11 +269,6 @@ do_config(){
             a2wcrecalc "$SUBDOMAIN.*"
         else
             echo "Warning: a2wcrecalc not found. Please run it manually: a2wcrecalc $SUBDOMAIN.*" >&2
-        fi
-
-        if command -v a2wcrecalc-dms >/dev/null 2>&1; then
-            vecho "Calling a2wcrecalc-dms..."
-            a2wcrecalc-dms
         fi
 
         vecho "Subdomain wildcard configuration complete for $FQDN"

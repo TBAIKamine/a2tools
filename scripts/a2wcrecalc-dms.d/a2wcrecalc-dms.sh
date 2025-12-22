@@ -63,6 +63,15 @@ output_file="$DMS_DIR/docker-data/dms/config/sni_cert_map"
 
 if [ -n "$sni_map_content" ]; then
     echo "$sni_map_content" > "$output_file"
+    
+    # Match ownership to compose.yaml if it exists
+    if [ -f "$DMS_DIR/compose.yaml" ]; then
+        compose_owner=$(stat -c '%U:%G' "$DMS_DIR/compose.yaml" 2>/dev/null || stat -f '%Su:%Sg' "$DMS_DIR/compose.yaml" 2>/dev/null)
+        if [ -n "$compose_owner" ]; then
+            chown "$compose_owner" "$output_file"
+        fi
+    fi
+    
     echo "SNI certificate map saved to: $output_file"
     count=$(printf '%s' "$sni_map_content" | grep -cve '^[[:space:]]*$')
     echo "Total domains mapped: $count"
@@ -95,6 +104,15 @@ dovecot_output_file="$DMS_DIR/docker-data/dms/config/99-sni.conf"
 
 if [ -n "$dovecot_sni_content" ]; then
     echo "$dovecot_sni_content" > "$dovecot_output_file"
+    
+    # Match ownership to compose.yaml if it exists
+    if [ -f "$DMS_DIR/compose.yaml" ]; then
+        compose_owner=$(stat -c '%U:%G' "$DMS_DIR/compose.yaml" 2>/dev/null || stat -f '%Su:%Sg' "$DMS_DIR/compose.yaml" 2>/dev/null)
+        if [ -n "$compose_owner" ]; then
+            chown "$compose_owner" "$dovecot_output_file"
+        fi
+    fi
+    
     echo "Dovecot SNI configuration saved to: $dovecot_output_file"
 else
     echo "Warning: No Dovecot SNI configuration generated." >&2
