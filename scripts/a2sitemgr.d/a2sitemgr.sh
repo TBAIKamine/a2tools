@@ -503,7 +503,13 @@ elif [ "$MODE" = "proxypass" ]; then
     ACTUAL_SERVER_NAME="$FQDN"
     
     # Check if base domain configuration exists; if not, create it first
-    BASE_DOMAIN_CONF="/etc/apache2/sites-available/${CERT_DOMAIN%%.*}.conf"
+    # For non-.com TLDs, the config file includes the TLD (e.g., example.online.conf)
+    BASE_DOMAIN_NAME="${CERT_DOMAIN%%.*}"
+    if [[ ! "$CERT_DOMAIN" =~ \.com$ ]]; then
+        TLD="${CERT_DOMAIN##*.}"
+        BASE_DOMAIN_NAME="${BASE_DOMAIN_NAME}.${TLD}"
+    fi
+    BASE_DOMAIN_CONF="/etc/apache2/sites-available/${BASE_DOMAIN_NAME}.conf"
     if [ ! -f "$BASE_DOMAIN_CONF" ]; then
         vecho "Base domain configuration not found at $BASE_DOMAIN_CONF"
         vecho "Creating base domain configuration for $CERT_DOMAIN first..."
