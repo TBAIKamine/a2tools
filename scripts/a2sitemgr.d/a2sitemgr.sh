@@ -236,7 +236,7 @@ do_config(){
         render_from_template_to_path "$SCRIPT_DIR/init_standard.conf.tpl" "$CONF" 10
         if command -v a2wcrecalc-dms >/dev/null 2>&1; then
             vecho "Calling a2wcrecalc-dms..."
-            sudo a2wcrecalc-dms
+            a2wcrecalc-dms
         fi
 
         return 0
