@@ -236,7 +236,7 @@ do_config(){
         render_from_template_to_path "$SCRIPT_DIR/init_standard.conf.tpl" "$CONF" 10
         if command -v a2wcrecalc-dms >/dev/null 2>&1; then
             vecho "Calling a2wcrecalc-dms..."
-            a2wcrecalc-dms
+            a2wcrecalc-dms || true
         fi
 
         return 0
@@ -266,7 +266,7 @@ do_config(){
 
         if command -v a2wcrecalc >/dev/null 2>&1; then
             vecho "Calling a2wcrecalc $SUBDOMAIN..."
-            a2wcrecalc "$SUBDOMAIN.*"
+            a2wcrecalc "$SUBDOMAIN.*" || true
         else
             echo "Warning: a2wcrecalc not found. Please run it manually: a2wcrecalc $SUBDOMAIN.*" >&2
         fi
