@@ -235,7 +235,7 @@ do_config(){
         CONF="/etc/apache2/sites-available/${FQDN_BASE}.conf"
         render_from_template_to_path "$SCRIPT_DIR/init_standard.conf.tpl" "$CONF" 10
         if command -v a2wcrecalc-dms >/dev/null 2>&1; then
-            vecho "Calling a2wcrecalc-dms..."
+            vecho "Calling a2wcrecalcError: a2sitemgr failed to configure domain aminecorelabsonline.online.-dms..."
             a2wcrecalc-dms || true
         fi
 
