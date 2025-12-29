@@ -3,6 +3,9 @@
 # source prerequisites
 . /usr/local/bin/getinput.d/getinput.sh
 
+# Disable errexit inherited from getinput.sh - we handle errors explicitly
+set +e
+
 # Initialize variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/a2sitemgr.d"
 MODE="domain"
