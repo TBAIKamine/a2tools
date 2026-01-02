@@ -170,16 +170,33 @@ for wildcard in "${wildcard_servers[@]}"; do
         if [ -n "$existing_config" ]; then
             # Update existing config file
             echo -e "$config_content" > "$existing_config"
+            config_basename=$(basename "$existing_config" .conf)
         else
             # Create new config file with 0-XXXX prefix
             config_filename=$(get_next_swc_config_number "$subdomain_label")
             echo -e "$config_content" > "${OUTPUT_DIR}/${config_filename}"
+            config_basename="${config_filename%.conf}"
+        fi
+        
+        # Enable the site configuration
+        if command -v a2ensite >/dev/null 2>&1; then
+            a2ensite "$config_basename" >/dev/null 2>&1 || true
         fi
     else
         # No domain servers found, remove existing config file if it exists (both old and new naming)
         existing_config=$(find_existing_swc_config "$subdomain_label")
         if [ -n "$existing_config" ] && [ -f "$existing_config" ]; then
+            config_basename=$(basename "$existing_config" .conf)
+            # Disable the site before removing
+            if command -v a2dissite >/dev/null 2>&1; then
+                a2dissite "$config_basename" >/dev/null 2>&1 || true
+            fi
             rm -f "$existing_config"
         fi
     fi
 done
+
+# Reload Apache to apply changes if any configs were modified
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl reload apache2 >/dev/null 2>&1 || true
+fi
