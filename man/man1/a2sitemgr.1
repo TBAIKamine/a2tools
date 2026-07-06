@@ -1,25 +1,30 @@
-.TH A2SITEMGR 1 "2026-07-05" "a2tools 1.0.0" "User Commands"
+.TH A2SITEMGR 1 "2026-07-06" "a2tools 1.0.0" "User Commands"
 .SH NAME
 a2sitemgr \- opinionated Apache virtual\-host manager
 .SH SYNOPSIS
 .B a2sitemgr
 .RB [ \-d " " \fIDOMAIN\fR]
-.RB [ \-\-mode
+.RB [ \-\-fqdn " " \fIDOMAIN\fR]
+.RB [ \-m | \-\-mode
 .RB { domain | proxypass | swc }]
 .RB [ \-p " " \fIPORT\fR]
+.RB [ \-\-port " " \fIPORT\fR]
 .RB [ \-s | \-\-secured ]
 .RB [ \-r " " \fIREGISTRAR\fR]
-.RB [ \-\-non\-interactive ]
-.RB [ \-\-set\-init\-dns ]
-.RB [ \-\-set\-init\-dns\-override ]
-.RB [ \-\-set\-init\-dns\-sync ]
-.RB [ \-\-no\-dns ]
+.RB [ \-\-registrar " " \fIREGISTRAR\fR]
+.RB [ \-ni | \-\-non\-interactive ]
+.RB [ \-\-setInitDNSRecords ]
+.RB [ \-o | \-\-override ]
+.RB [ \-\-sync ]
 .RB [ \-v | \-\-verbose ]
-.RB [ \-\-help ]
+.RB [ \-h | \-\-help ]
 .SH DESCRIPTION
 \fBa2sitemgr\fR creates Apache2 virtual hosts using a small set of
 opinionated, repeatable templates and obtains TLS certificates via
 \fBcertbot\fR.
+.PP
+All arguments are named flags. Positional arguments are not accepted;
+the FQDN must be supplied via \fB\-d\fR / \fB\-\-fqdn\fR.
 .PP
 Three modes are supported:
 .TP
@@ -42,14 +47,14 @@ If a domain is owned by a registrar that \fBfqdnmgr\fR knows about,
 wait for propagation before invoking \fBcertbot\fR.
 .SH OPTIONS
 .TP
-.BR \-d ", " \-\-domain " " \fIDOMAIN\fR
+.BR \-d ", " \-\-fqdn " " \fIDOMAIN\fR
 Domain or subdomain to manage. Required.
 .RB "For " "swc" " mode pass a wildcard such as " "mail.*" "."
 .TP
-.BR \-\-mode " " { \fBdomain\fR | \fBproxypass\fR | \fBswc\fR }
+.BR \-m ", " \-\-mode " " { \fBdomain\fR | \fBproxypass\fR | \fBswc\fR }
 Vhost mode. Default: \fBdomain\fR.
 .TP
-.BR \-p ", " \-\-proxy\-port " " \fIPORT\fR
+.BR \-p ", " \-\-port " " \fIPORT\fR
 Local port to reverse proxy to (proxypass mode only).
 .TP
 .BR \-s ", " \-\-secured
@@ -59,22 +64,21 @@ Upstream service is HTTPS (proxypass mode only).
 Registrar slug (e.g. \fBnamecheap.com\fR) used to verify ownership and
 configure DNS records.
 .TP
-.BR \-\-non\-interactive
+.BR \-ni ", " \-\-non\-interactive
 Do not prompt. Fail if required information is missing.
 .TP
-.BR \-\-set\-init\-dns
+.BR \-\-setInitDNSRecords
 Set the initial DNS records required for HTTPS before certificate
 issuance.
 .TP
-.BR \-\-set\-init\-dns\-override
-Like \fB\-\-set\-init\-dns\fR, but overwrite existing records that
-\fBa2sitemgr\fR previously set.
+.BR \-o ", " \-\-override
+When used with \fB\-\-setInitDNSRecords\fR, delete all existing DNS
+records before setting the initial ones. Without this flag, existing
+records are preserved and initial records are added/updated.
 .TP
-.BR \-\-set\-init\-dns\-sync
-Block until DNS propagation is confirmed.
-.TP
-.BR \-\-no\-dns
-Skip DNS setup (use only when the domain is already correctly delegated).
+.BR \-\-sync
+When used with \fB\-\-setInitDNSRecords\fR, block until DNS propagation
+is confirmed.
 .TP
 .BR \-v ", " \-\-verbose
 Print progress on the controlling terminal.
@@ -103,6 +107,37 @@ SQLite database tracking the domains managed by \fBa2tools\fR.
 .TP
 .I /var/log/a2tools/
 Operational logs.
+.SH EXAMPLES
+.PP
+Create a vhost for a single base domain:
+.RS
+.nf
+sudo a2sitemgr -d example.com
+.fi
+.RE
+.PP
+Create a ProxyPass subdomain that points at a local container:
+.RS
+.nf
+sudo a2sitemgr -d app.example.com --mode proxypass -p 1234
+sudo a2sitemgr -d app.example.com --mode proxypass -p 8443 --secured
+.fi
+.RE
+.PP
+Serve a single subdomain across every managed base domain:
+.RS
+.nf
+sudo a2sitemgr -d 'mail.*' --mode swc
+.fi
+.RE
+.PP
+Set initial DNS records and wait for propagation before issuing the
+wildcard certificate:
+.RS
+.nf
+sudo a2sitemgr -d example.com --setInitDNSRecords --sync -r namecheap.com -v
+.fi
+.RE
 .SH SEE ALSO
 .BR a2certrenew (1),
 .BR a2wcrecalc (1),

@@ -1,7 +1,37 @@
 #!/bin/bash
+#
+# Optional -d / --domain flag selects the wildcard subdomain pattern to manage
+# (e.g. "mail.*"). With no flag, every wildcard subdomain found in the existing
+# vhost configs is used.
 
-# Check for optional domain argument (format: subdomain.* e.g., mail.*)
-WILDCARD_DOMAIN="$1"
+WILDCARD_DOMAIN=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -d|--domain)
+            [ $# -ge 2 ] || { echo "Error: -d/--domain requires a value (use --help)" >&2; exit 1; }
+            WILDCARD_DOMAIN="$2"; shift 2
+            ;;
+        -h|--help)
+            cat <<EOF
+Usage: a2wcrecalc -d WILDCARD_DOMAIN
+
+Recalculate Apache vhost configs to add or remove a wildcard subdomain alias
+(e.g. "mail.*"). Without -d, every wildcard subdomain present in the existing
+vhost configs is processed.
+
+Options:
+  -d, --domain WILDCARD_DOMAIN   Subdomain wildcard pattern (e.g. "mail.*")
+  -h, --help                     Show this help
+EOF
+            exit 0
+            ;;
+        *)
+            echo "Error: invalid argument '$1' (use --help)" >&2
+            exit 1
+            ;;
+    esac
+done
 
 # Directory containing Apache site config files
 CONFIG_DIR="/etc/apache2/sites-available"

@@ -1,10 +1,30 @@
-.TH FQDNMGR 1 "2026-07-05" "a2tools 1.0.0" "User Commands"
+.TH FQDNMGR 1 "2026-07-06" "a2tools 1.0.0" "User Commands"
 .SH NAME
 fqdnmgr \- provision domains: ownership checks, purchases and DNS records
 .SH SYNOPSIS
 .B fqdnmgr
 .RB [ \-\-help "] [" \-v | \-\-verbose ]
-.RB { \fIcommand\fR " " [\fIargs\fR ...] }
+.B fqdnmgr check
+.RB [ \-d " " \fIFQDN\fR]
+.RB [ \-r " " \fIREGISTRAR\fR]
+.B fqdnmgr purchase
+.RB [ \-d " " \fIFQDN\fR]
+.RB [ \-r " " \fIREGISTRAR\fR]
+.B fqdnmgr certify
+.RB [ \-r " " \fIREGISTRAR\fR]
+.B fqdnmgr cleanup
+.RB [ \-r " " \fIREGISTRAR\fR]
+.B fqdnmgr setInitDNSRecords
+.RB [ \-d " " \fIFQDN\fR]
+.RB [ \-r " " \fIREGISTRAR\fR]
+.RB [ \-o | \-\-override ]
+.RB [ \-\-sync ]
+.RB [ \-\-timeout " " \fISECONDS\fR]
+.B fqdnmgr checkInitDns
+.RB [ \-d " " \fIFQDN\fR]
+.B fqdnmgr list
+.RB [ \-r " " \fIREGISTRAR\fR]
+.RB [ \-m " " { \fBlocal\fR | \fBremote\fR } ]
 .SH DESCRIPTION
 \fBfqdnmgr\fR interacts with domain registrars (Namecheap, Wedos, ...)
 through a small plugin interface to check domain availability, purchase
@@ -12,32 +32,46 @@ domains, list domains on an account, and set DNS records. It also
 implements the auth / cleanup hooks used by \fBcertbot\fR for ACME
 DNS\-01 challenges.
 .PP
+All arguments are named flags. Positional arguments are not accepted;
+every subcommand takes \fB\-d\fR / \fB\-\-domain\fR and/or
+\fB\-r\fR / \fB\-\-registrar\fR as appropriate.
+.PP
 Credentials are read from the root\-only SQLite database at
 \fB/var/lib/a2tools/creds.db\fR (mode 0600) that \fBfqdncredmgr\fR(1)
 manages. No daemon, no socket, no environment variables.
 .PP
 Available subcommands (use \fB\-\-help\fR for the full list):
 .TP
-.B availability
-Print whether a domain is available for registration.
+.B check
+Print the status of a domain (\fBfree\fR / \fBowned\fR / \fBtaken\fR).
+Requires \fB\-d\fR; \fB\-r\fR is optional (hints at the registrar).
 .TP
 .B purchase
 Buy a domain via the configured registrar.
+Requires \fB\-d\fR and \fB\-r\fR.
 .TP
 .B list
-List domains associated with a registrar account.
+List domains associated with a registrar account, or all locally
+tracked domains when no \fB\-r\fR is given. With \fB\-r\fR, \fB\-m
+local\fR queries the local DB and \fB\-m remote\fR hits the registrar
+API.
 .TP
-.B status
-Print the status of a domain (expiry, nameservers, ...).
+.B certify
+\fBcertbot\fR manual\-auth hook. Set the ACME TXT challenge record
+for the registrar specified by \fB\-r\fR.
+.TP
+.B cleanup
+\fBcertbot\fR manual\-cleanup hook. Remove the ACME TXT challenge
+record for the registrar specified by \fB\-r\fR.
 .TP
 .B setInitDNSRecords
-Set the initial DNS records (\fBA\fR, \fBAAAA\fR, mail MX/SPF/DKIM,
-ACME \fB_txt_acme\-challenge\fR placeholder) for the listed domains.
-With \fB\-r\fR, apply to every domain on the given registrar.
+Set the initial DNS records (\fBA\fR, mail MX) for the listed domains.
+With \fB\-r\fR only, apply to every domain on the given registrar.
+With \fB\-\-sync\fR, block until propagation is confirmed.
 .TP
-.B unset / set
-Low\-level record manipulation. Use \fBsetInitDNSRecords\fR unless you
-need fine\-grained control.
+.B checkInitDns
+Check whether the initial DNS records for a domain have propagated.
+Requires \fB\-d\fR.
 .PP
 \fBsetInitDNSRecords\fR polls the configured nameservers and Google DNS
 \fB8.8.8.8\fR for propagation using exponentially decaying checkpoints
@@ -45,6 +79,28 @@ capped at the historical average for that provider, with a 10 second
 safety buffer. The check is always run before \fBcertbot\fR is invoked,
 to avoid a certbot crash on missing DNS.
 .SH OPTIONS
+.TP
+.BR \-d ", " \-\-domain " " \fIFQDN\fR
+Domain to operate on. For \fBsetInitDNSRecords\fR, may be passed
+multiple times (or as a space\-separated list in one \fB\-d\fR value)
+to process several domains in a single run.
+.TP
+.BR \-r ", " \-\-registrar " " \fIREGISTRAR\fR
+Registrar slug (e.g. \fBnamecheap.com\fR).
+.TP
+.BR \-m ", " \-\-mode " " { \fBlocal\fR | \fBremote\fR }
+List source (only meaningful for \fBlist\fR with \fB\-r\fR).
+.TP
+.BR \-o ", " \-\-override
+\fBsetInitDNSRecords\fR: delete all existing DNS records before
+setting the initial ones.
+.TP
+.BR \-\-sync
+\fBsetInitDNSRecords\fR: block until DNS propagation is confirmed.
+.TP
+.BR \-t ", " \-\-timeout " " \fISECONDS\fR
+\fBsetInitDNSRecords\fR: maximum time to wait for DNS propagation
+(default: 600).
 .TP
 .BR \-v ", " \-\-verbose
 Print progress on the controlling terminal.
@@ -59,6 +115,39 @@ Success.
 .B >0
 The registrar API returned an error, propagation timed out, or a
 required parameter was missing.
+.SH EXAMPLES
+.PP
+Check the status of a domain:
+.RS
+.nf
+sudo fqdnmgr check -d example.com
+sudo fqdnmgr check -d example.com -r namecheap.com -v
+.fi
+.RE
+.PP
+Purchase a domain:
+.RS
+.nf
+sudo fqdnmgr purchase -d example.com -r namecheap.com
+.fi
+.RE
+.PP
+Set initial DNS records and wait for propagation:
+.RS
+.nf
+sudo fqdnmgr setInitDNSRecords -d example.com --sync -v
+sudo fqdnmgr setInitDNSRecords -r namecheap.com --sync
+.fi
+.RE
+.PP
+List domains tracked locally, or fetched from a registrar:
+.RS
+.nf
+sudo fqdnmgr list
+sudo fqdnmgr list -r namecheap.com -m local
+sudo fqdnmgr list -r namecheap.com -m remote
+.fi
+.RE
 .SH FILES
 .TP
 .I /var/lib/a2tools/creds.db

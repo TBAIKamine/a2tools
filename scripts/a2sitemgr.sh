@@ -92,7 +92,7 @@ handle_fqdnmgr_error() {
             local provider
             provider=$(echo "$output" | grep -oE 'CREDS_ERROR:no_credentials:(.+)' | cut -d: -f3)
             echo "Error: No credentials found for provider '$provider'." >&2
-            echo "Please add credentials: sudo fqdncredmgr add $provider <username>" >&2
+            echo "Please add credentials: sudo fqdncredmgr add -p $provider -u <username>" >&2
             exit 1
             ;;
         12)
@@ -238,7 +238,7 @@ do_config() {
                 vecho "Base domain configuration not found at $BASE_DOMAIN_CONF"
                 vecho "Creating base domain configuration for $CERT_DOMAIN first..."
 
-                RECURSIVE_ARGS=("$CERT_DOMAIN" -m domain)
+                RECURSIVE_ARGS=(-d "$CERT_DOMAIN" -m domain)
                 [ -n "$REGISTRAR" ] && RECURSIVE_ARGS+=(-r "$REGISTRAR")
                 [ "$NON_INTERACTIVE" = true ] && RECURSIVE_ARGS+=(-ni)
                 [ "$VERBOSE" = true ] && RECURSIVE_ARGS+=(-v)
@@ -343,34 +343,18 @@ do_config() {
 # ---------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -d=*|--fqdn=*) FQDN="${1#*=}"; shift ;;
-        -d|--fqdn)     FQDN="$2"; shift 2 ;;
-        -m=*|--mode=*) MODE="${1#*=}"; shift ;;
-        -m|--mode)     MODE="$2"; shift 2 ;;
-        -r=*|--registrar=*) REGISTRAR="${1#*=}"; shift ;;
-        -r|--registrar)     REGISTRAR="$2"; shift 2 ;;
+        -d|--fqdn)   FQDN="$2"; shift 2 ;;
+        -m|--mode)   MODE="$2"; shift 2 ;;
+        -r|--registrar) REGISTRAR="$2"; shift 2 ;;
         -s|--secured)  SECURED=true; shift ;;
-        -p=*|--port=*) PROXY_PORT="${1#*=}"; shift ;;
-        -p|--port)     PROXY_PORT="$2"; shift 2 ;;
+        -p|--port)   PROXY_PORT="$2"; shift 2 ;;
         -ni|--non-interactive) NON_INTERACTIVE=true; shift ;;
         -v|--verbose)  VERBOSE=true; shift ;;
         --setInitDNSRecords) SET_INIT_DNS=true; shift ;;
         -o|--override) SET_INIT_DNS_OVERRIDE=true; shift ;;
         --sync)        SET_INIT_DNS_SYNC=true; shift ;;
         -h|--help)     usage 0 ;;
-        -*)
-            echo "Unknown option $1" >&2
-            usage 1
-            ;;
-        *)
-            if [ -z "$FQDN" ]; then
-                FQDN="$1"
-            else
-                echo "Too many arguments" >&2
-                usage 1
-            fi
-            shift
-            ;;
+        *)             { echo "Error: invalid argument '$1' (use --help)" >&2; exit 1; } ;;
     esac
 done
 
@@ -379,8 +363,8 @@ case "$MODE" in
     pp|proxypass)           MODE="proxypass" ;;
     swc|subdomainWildCard)  MODE="swc" ;;
     *)
-        echo "Error: Unknown mode: $MODE" >&2
-        usage 1
+        echo "Error: Unknown mode: $MODE (use --help)" >&2
+        exit 1
         ;;
 esac
 
@@ -528,9 +512,9 @@ if [ "$MODE" = "domain" ] || [ "$MODE" = "proxypass" ]; then
         echo "Warning: fqdnmgr not found; domain ownership cannot be checked automatically." >&2
         echo "Please ensure domain $TARGET_DOMAIN is registered and DNS is configured before proceeding." >&2
     else
-        FQDNMGR_ARGS=(check "$TARGET_DOMAIN")
-        [ -n "$REGISTRAR" ] && FQDNMGR_ARGS+=("$REGISTRAR")
-        [ "$VERBOSE" = true ] && FQDNMGR_ARGS+=("-v")
+        FQDNMGR_ARGS=(check -d "$TARGET_DOMAIN")
+        [ -n "$REGISTRAR" ] && FQDNMGR_ARGS+=(-r "$REGISTRAR")
+        [ "$VERBOSE" = true ] && FQDNMGR_ARGS+=(-v)
 
         # Show fqdnmgr prompts to the user when possible; otherwise run quietly.
         if [ -c /dev/tty ]; then
@@ -571,9 +555,9 @@ if [ "$MODE" = "domain" ] || [ "$MODE" = "proxypass" ]; then
                 [Yy]*)
                     vecho "Attempting to purchase $TARGET_DOMAIN via $REGISTRAR..."
                     if [ "$VERBOSE" = true ]; then
-                        PURCHASE_OUTPUT=$(fqdnmgr purchase "$TARGET_DOMAIN" "$REGISTRAR" -v 2>&1)
+                        PURCHASE_OUTPUT=$(fqdnmgr purchase -d "$TARGET_DOMAIN" -r "$REGISTRAR" -v 2>&1)
                     else
-                        PURCHASE_OUTPUT=$(fqdnmgr purchase "$TARGET_DOMAIN" "$REGISTRAR" 2>&1)
+                        PURCHASE_OUTPUT=$(fqdnmgr purchase -d "$TARGET_DOMAIN" -r "$REGISTRAR" 2>&1)
                     fi
                     purchase_result=$?
                     if handle_fqdnmgr_error "$purchase_result" "$PURCHASE_OUTPUT" "domain purchase"; then
@@ -698,7 +682,7 @@ else
                     *no_credentials*)
                         provider=$(echo "$CREDS_ERR_LINE" | cut -d: -f3)
                         echo "Error: No credentials found for provider '$provider'." >&2
-                        echo "Please add credentials: sudo fqdncredmgr add $provider <username>" >&2
+                        echo "Please add credentials: sudo fqdncredmgr add -p $provider -u <username>" >&2
                         ;;
                     *database_not_found*)
                         echo "Error: Credentials database not found." >&2

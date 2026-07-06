@@ -1,14 +1,45 @@
 #!/bin/bash
-if [ $# -gt 0 ] && [ -d "$1" ]; then
-    DMS_DIR="$1"
+#
+# -d / --dir selects the docker-mailserver directory (overrides $DMS_DIR and
+# the built-in /opt/compose/docker-mailserver default).
+
+DMS_DIR_CLI=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -d|--dir)
+            [ $# -ge 2 ] || { echo "Error: -d/--dir requires a value (use --help)" >&2; exit 1; }
+            DMS_DIR_CLI="$2"; shift 2
+            ;;
+        -h|--help)
+            cat <<EOF
+Usage: a2wcrecalc-dms -d DMS_DIR
+
+Recalculate Apache configs and regenerate docker-mailserver SNI mapping files.
+DMS_DIR resolution order: -d/--dir flag, then \$DMS_DIR env, then
+/opt/compose/docker-mailserver.
+
+Options:
+  -d, --dir DMS_DIR   Path to the docker-mailserver mount directory
+  -h, --help          Show this help
+EOF
+            exit 0
+            ;;
+        *)
+            echo "Error: invalid argument '$1' (use --help)" >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [ -n "$DMS_DIR_CLI" ] && [ -d "$DMS_DIR_CLI" ]; then
+    DMS_DIR="$DMS_DIR_CLI"
+elif [ -n "${DMS_DIR:-}" ] && [ -d "$DMS_DIR" ]; then
+    : # honour the env var the caller already set
+elif [ -d "/opt/compose/docker-mailserver" ]; then
+    DMS_DIR="/opt/compose/docker-mailserver"
 else
-    # Default to standard path when no argument provided or invalid argument
-    if [ -d "/opt/compose/docker-mailserver" ]; then
-        DMS_DIR="/opt/compose/docker-mailserver"
-    else
-        echo "DMS directory not found." >&2
-        exit 1
-    fi
+    echo "DMS directory not found." >&2
+    exit 1
 fi
 if [ ! -d "$DMS_DIR/docker-data/dms/config/" ]; then
     echo "Config directory not found: $DMS_DIR/docker-data/dms/config/" >&2

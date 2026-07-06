@@ -398,14 +398,19 @@ get_credentials() {
     creds_get "$registrar" || exit $?
 }
 
+USAGE_FILE="$A2TOOLS_SHARE/usage/fqdnmgr.txt"
+
+# die MSG: print MSG to stderr and exit 1. Use this from error sites; do NOT
+# print the long usage text - the user can run --help for that.
+die() { echo "Error: $* (use --help)" >&2; exit 1; }
+
 usage() {
-    local exit_code="${1:-1}"
-    local usage_file="$A2TOOLS_SHARE/usage/fqdnmgr.txt"
-    if [ ! -f "$usage_file" ]; then
-        echo "Error: usage file not found: $usage_file" >&2
+    local exit_code="${1:-0}"
+    if [ ! -f "$USAGE_FILE" ]; then
+        echo "Error: usage file not found: $USAGE_FILE" >&2
         exit 1
     fi
-    cat "$usage_file"
+    cat "$USAGE_FILE"
     list_providers | sed 's/^/  - /'
     exit "$exit_code"
 }
@@ -765,7 +770,7 @@ detect_registrar_for_domain() {
 
     if [ "$VERBOSE" = true ]; then
         vecho "Detecting registrar for $fqdn..."
-        check_output=$("$0" check "$fqdn" -v 2>&1)
+        check_output=$("$0" check -d "$fqdn" -v 2>&1)
         local check_exit=$?
         [ $check_exit -ne 0 ] && vecho "Warning: check command failed with exit code $check_exit"
     else
@@ -803,7 +808,7 @@ prompt_store_creds() {
         echo "Error: fqdncredmgr command not found" >&2
         return 1
     fi
-    if printf '%s\n' "$new_api_key" | fqdncredmgr add "$registrar" "$new_username" -p -; then
+    if printf '%s\n' "$new_api_key" | fqdncredmgr add -p "$registrar" -u "$new_username" -k -; then
         echo "Credentials added. Re-run 'fqdnmgr check' to check ownership."
         return 0
     fi
@@ -1011,13 +1016,13 @@ process_single_domain_init() {
     return 0
 }
 
-# setInitDNSRecords [-d "DOMAIN(S)"] [-r REGISTRAR] [-o] [--sync] [--timeout SECONDS]
 setInitDNSRecords() {
-    local domains_arg="" registrar_arg="" sync_mode="" override_mode="" timeout_arg="600"
+    local -a domains_arr=()
+    local registrar_arg="" sync_mode="" override_mode="" timeout_arg="600"
 
     while [ $# -gt 0 ]; do
         case "$1" in
-            -d) shift; domains_arg="$1" ;;
+            -d) shift; domains_arr+=("$1") ;;
             -r) shift; registrar_arg="$1" ;;
             -o) override_mode="override" ;;
             --sync) sync_mode="sync" ;;
@@ -1030,25 +1035,22 @@ setInitDNSRecords() {
                     return 1
                 fi
                 ;;
+            -v|--verbose) VERBOSE=true ;;
             -*)
                 echo "Error: Unknown argument '$1'" >&2
-                echo "Usage: setInitDNSRecords [-d \"DOMAIN(S)\"] [-r REGISTRAR] [-o] [--sync] [--timeout SECONDS]" >&2
                 return 1
                 ;;
             *)
-                if [ -z "$domains_arg" ]; then
-                    domains_arg="$1"
-                else
-                    domains_arg="$domains_arg $1"
-                fi
+                for tok in $1; do
+                    domains_arr+=("$tok")
+                done
                 ;;
         esac
         shift
     done
 
-    if [ -z "$domains_arg" ] && [ -z "$registrar_arg" ]; then
-        echo "Error: At least one of -d or -r is required" >&2
-        echo "Usage: setInitDNSRecords [-d \"DOMAIN(S)\"] [-r REGISTRAR] [-o] [--sync] [--timeout SECONDS]" >&2
+    if [ "${#domains_arr[@]}" -eq 0 ] && [ -z "$registrar_arg" ]; then
+        echo "Error: At least one of --domain or --registrar is required (use --help)" >&2
         return 1
     fi
 
@@ -1058,9 +1060,9 @@ setInitDNSRecords() {
     local -a domain_results=()
     local success_count=0 total_count=0
 
-    if [ -n "$domains_arg" ]; then
+    if [ "${#domains_arr[@]}" -gt 0 ]; then
         # MODE: specific domain(s) via -d, -r is a hint
-        read -ra DOMAINS_TO_PROCESS <<< "$domains_arg"
+        local -a DOMAINS_TO_PROCESS=("${domains_arr[@]}")
         total_count=${#DOMAINS_TO_PROCESS[@]}
 
         local domain
@@ -1821,112 +1823,143 @@ list() {
 # =============================================================================
 # Main dispatch
 # =============================================================================
+#
+# All arguments are named flags. The first non-flag argument is the subcommand
+# (certify | purchase | cleanup | check | setInitDNSRecords | checkInitDns | list).
+# Subcommand-specific values are passed via flags:
+#   -d / --domain      FQDN (check, purchase, checkInitDns, setInitDNSRecords)
+#   -r / --registrar   REGISTRAR (certify, cleanup, check, purchase, setInitDNSRecords, list)
+#   -m / --mode        local | remote (list only, with -r)
+#   -t / --timeout     SECONDS (setInitDNSRecords)
+#   -o / --override    override mode (setInitDNSRecords)
+#       --sync         wait for propagation (setInitDNSRecords)
+#   -v / --verbose
+#   -ni / --non-interactive
+#   -h / --help
+#
+# No positional arguments are accepted anywhere.
 
-# Extract -v / -ni wherever they appear, without word-splitting other args.
-ARGS=()
-for arg in "$@"; do
-    case "$arg" in
-        -v)  VERBOSE=true ;;
-        -ni) NON_INTERACTIVE=true ;;
-        *)   ARGS+=("$arg") ;;
+FUNCTION_NAME=""
+SUBCMD_DOMAINS=()
+SUBCMD_REGISTRAR=""
+SUBCMD_MODE=""
+SUBCMD_TIMEOUT="600"
+SUBCMD_SYNC=false
+SUBCMD_OVERRIDE=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage 0
+            ;;
+        -v|--verbose)
+            VERBOSE=true; shift
+            ;;
+        -ni|--non-interactive)
+            NON_INTERACTIVE=true; shift
+            ;;
+        -d|--domain)
+            [ $# -ge 2 ] || { echo "Error: -d/--domain requires a value" >&2; exit 1; }
+            SUBCMD_DOMAINS+=("$2"); shift 2
+            ;;
+        -r|--registrar)
+            [ $# -ge 2 ] || { echo "Error: -r/--registrar requires a value" >&2; exit 1; }
+            SUBCMD_REGISTRAR="$2"; shift 2
+            ;;
+        -m|--mode)
+            [ $# -ge 2 ] || { echo "Error: -m/--mode requires a value" >&2; exit 1; }
+            SUBCMD_MODE="$2"; shift 2
+            ;;
+        -t|--timeout)
+            [ $# -ge 2 ] || { echo "Error: -t/--timeout requires a value" >&2; exit 1; }
+            if [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ]; then
+                SUBCMD_TIMEOUT="$2"
+            else
+                echo "Error: --timeout requires a positive integer (seconds)" >&2
+                exit 1
+            fi
+            shift 2
+            ;;
+        -o|--override)
+            SUBCMD_OVERRIDE="override"; shift
+            ;;
+        --sync)
+            SUBCMD_SYNC=true; shift
+            ;;
+        *)
+            if [ -z "$FUNCTION_NAME" ]; then
+                FUNCTION_NAME="$1"
+            else
+                die "invalid argument '$1'"
+            fi
+            shift
+            ;;
     esac
 done
-set -- "${ARGS[@]}"
 
-if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-    usage 0
-fi
-
-if [ $# -lt 1 ]; then
-    usage 1
-fi
-
-FUNCTION_NAME="$1"
-shift
+[ -n "$FUNCTION_NAME" ] || die "no subcommand"
 
 case "$FUNCTION_NAME" in
     certify)
-        if [ $# -lt 1 ]; then
-            echo "Error: certify requires REGISTRAR argument" >&2
-            echo "Usage: $0 certify <REGISTRAR>" >&2
-            exit 1
-        fi
-        certify "$1"
+        [ -n "$SUBCMD_REGISTRAR" ] || die "certify requires --registrar"
+        certify "$SUBCMD_REGISTRAR"
         ;;
     purchase)
-        if [ $# -lt 2 ]; then
-            echo "Error: purchase requires FQDN and REGISTRAR arguments" >&2
-            echo "Usage: $0 purchase <FQDN> <REGISTRAR>" >&2
-            exit 1
+        if [ "${#SUBCMD_DOMAINS[@]}" -lt 1 ] || [ -z "$SUBCMD_REGISTRAR" ]; then
+            die "purchase requires --domain and --registrar"
         fi
-        if ! is_valid_fqdn "$1"; then
-            echo "Error: Invalid domain '$1'." >&2
+        if ! is_valid_fqdn "${SUBCMD_DOMAINS[0]}"; then
+            echo "Error: Invalid domain '${SUBCMD_DOMAINS[0]}'." >&2
             exit 2
         fi
-        purchase "$1" "$2"
+        purchase "${SUBCMD_DOMAINS[0]}" "$SUBCMD_REGISTRAR"
         ;;
     cleanup)
-        if [ $# -lt 1 ]; then
-            echo "Error: cleanup requires REGISTRAR argument" >&2
-            echo "Usage: $0 cleanup <REGISTRAR>" >&2
-            exit 1
-        fi
-        cleanup "$1"
+        [ -n "$SUBCMD_REGISTRAR" ] || die "cleanup requires --registrar"
+        cleanup "$SUBCMD_REGISTRAR"
         ;;
     check)
-        if [ $# -lt 1 ]; then
-            echo "Error: check requires FQDN argument" >&2
-            echo "Usage: $0 check <FQDN> [REGISTRAR]" >&2
-            exit 1
-        fi
-        FQDN="$1"; shift
+        [ "${#SUBCMD_DOMAINS[@]}" -ge 1 ] || die "check requires --domain"
+        FQDN="${SUBCMD_DOMAINS[0]}"
         if ! is_valid_fqdn "$FQDN"; then
-            echo "Error: Invalid domain '$FQDN'. Provide a fully-qualified domain name like 'example.com' (not just 'example')." >&2
-            echo "Usage: $0 check <FQDN> [REGISTRAR]" >&2
+            echo "Error: Invalid domain '$FQDN'." >&2
             exit 2
         fi
-        REGISTRAR=""
-        while [ $# -gt 0 ]; do
-            if [ -z "$REGISTRAR" ]; then
-                REGISTRAR="$1"
-            else
-                echo "Error: unexpected argument '$1'" >&2
-                echo "Usage: $0 check <FQDN> [REGISTRAR]" >&2
-                exit 1
-            fi
-            shift
-        done
-        check_status "$FQDN" "$REGISTRAR"
+        check_status "$FQDN" "$SUBCMD_REGISTRAR"
         ;;
     setInitDNSRecords)
-        setInitDNSRecords "$@"
+        if [ "${#SUBCMD_DOMAINS[@]}" -eq 0 ] && [ -z "$SUBCMD_REGISTRAR" ]; then
+            die "setInitDNSRecords requires --domain or --registrar"
+        fi
+        args=()
+        if [ "${#SUBCMD_DOMAINS[@]}" -gt 0 ]; then
+            args+=(-d "${SUBCMD_DOMAINS[*]}")
+        fi
+        [ -n "$SUBCMD_REGISTRAR" ] && args+=(-r "$SUBCMD_REGISTRAR")
+        [ -n "$SUBCMD_OVERRIDE" ] && args+=(-o)
+        [ "$SUBCMD_SYNC" = true ] && args+=(--sync)
+        [ "$SUBCMD_TIMEOUT" != "600" ] && args+=(--timeout "$SUBCMD_TIMEOUT")
+        [ "$VERBOSE" = true ] && args+=(-v)
+        setInitDNSRecords "${args[@]}"
         ;;
     checkInitDns)
-        if [ $# -lt 1 ]; then
-            echo "Error: checkInitDns requires FQDN argument" >&2
-            echo "Usage: $0 checkInitDns <FQDN>" >&2
-            exit 1
-        fi
+        [ "${#SUBCMD_DOMAINS[@]}" -ge 1 ] || die "checkInitDns requires --domain"
         if ! get_wan_ip; then
             echo "Error: Cannot proceed without WAN IP" >&2
             exit 1
         fi
-        check_init_dns_propagation "$1" "$WAN_IP"
+        check_init_dns_propagation "${SUBCMD_DOMAINS[0]}" "$WAN_IP"
         ;;
     list)
-        if [ $# -eq 0 ]; then
+        if [ -z "$SUBCMD_REGISTRAR" ]; then
             list "" ""
-        elif [ $# -eq 1 ]; then
-            echo "Error: when REGISTRAR is specified, mode (local|remote) is required" >&2
-            echo "Usage: $0 list [REGISTRAR] [local|remote]" >&2
-            exit 1
+        elif [ -z "$SUBCMD_MODE" ]; then
+            die "list --registrar X requires --mode local|remote"
         else
-            list "$1" "$2"
+            list "$SUBCMD_REGISTRAR" "$SUBCMD_MODE"
         fi
         ;;
     *)
-        echo "Error: Unknown function '$FUNCTION_NAME'" >&2
-        echo "Available functions: certify, purchase, cleanup, check, setInitDNSRecords, checkInitDns, list" >&2
-        exit 1
+        die "unknown subcommand '$FUNCTION_NAME'"
         ;;
 esac

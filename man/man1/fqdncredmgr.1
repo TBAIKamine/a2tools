@@ -1,22 +1,17 @@
-.TH FQDNCREDMGR 1 "2026-07-05" "a2tools 1.0.0" "User Commands"
+.TH FQDNCREDMGR 1 "2026-07-06" "a2tools 1.0.0" "User Commands"
 .SH NAME
 fqdncredmgr \- manage registrar API credentials
 .SH SYNOPSIS
 .B fqdncredmgr
-.RB add " " \fIprovider\fR " " \fIusername\fR
-.RB [ \-p " " { \fIkey\fR | \fB-\fR } ]
+.RB add " " \-p " " \fIprovider\fR " " \-u " " \fIusername\fR
+.RB [ \-k " " \fB\-\fR ]
 .B fqdncredmgr
-.RB update " " \fIprovider\fR " " \fIusername\fR
-.RB [ \-p " " { \fIkey\fR | \fB-\fR } ]
+.RB update " " \-p " " \fIprovider\fR " " \-u " " \fIusername\fR
+.RB [ \-k " " \fB\-\fR ]
 .B fqdncredmgr
-.RB delete " " \fIprovider\fR " " \fIusername\fR
+.RB delete " " \-p " " \fIprovider\fR
 .B fqdncredmgr
 .RB list
-.RB [ \fIprovider\fR ]
-.B fqdncredmgr
-.RB show " " \fIprovider\fR " " \fIusername\fR
-.B fqdncredmgr
-.RB providers
 .B fqdncredmgr
 .RB { \-\-help " | " \-h }
 .SH DESCRIPTION
@@ -26,11 +21,13 @@ credentials are read directly by \fBfqdnmgr\fR(1) from that database
 \- there is no daemon, no socket and no environment variable
 intermediary.
 .PP
+All arguments are named flags. Positional arguments are not accepted;
+\fIPROVIDER\fR must be passed via \fB\-p\fR / \fB\-\-provider\fR and
+\fIUSERNAME\fR via \fB\-u\fR / \fB\-\-username\fR.
+.PP
 Supplying the API key:
 .IP
-\fB\-p\fR \fIKEY\fR   use \fIKEY\fR (visible in the process list; discouraged)
-.IP
-\fB\-p\fR \fB\-\fR   read the key from stdin (recommended for scripting)
+\fB\-k\fR \fB\-\fR   read the key from stdin (recommended for scripting)
 .IP
 omitted   prompt interactively with masked input
 (\fBsystemd\-ask\-password\fR if available, otherwise \fBread \-s\fR
@@ -39,33 +36,62 @@ from \fB/dev/tty\fR).
 Passing the key as a bare command\-line argument is NOT supported: argv
 is visible to every local user via \fBps\fR and lands in shell
 history.
-.SH COMMANDS
+.SH ACTIONS
 .TP
-.B add \fIprovider\fR \fIusername\fR
-Add a new credential. Prompts for the API key, unless \fB\-p\fR is
-given.
+.B add
+Add (or replace) credentials for a provider.
+Requires \fB\-p\fR and \fB\-u\fR.
 .TP
-.B update \fIprovider\fR \fIusername\fR
+.B update
 Replace the API key for an existing credential.
+Requires \fB\-p\fR and \fB\-u\fR.
 .TP
-.B delete \fIprovider\fR \fIusername\fR
-Delete a credential.
+.B delete
+Delete credentials for a provider.
+Requires \fB\-p\fR.
 .TP
-.B list [\fIprovider\fR]
-List stored credentials, optionally filtered by provider.
-.TP
-.B show \fIprovider\fR \fIusername\fR
-Print the metadata of a credential (the key itself is never printed).
-.TP
-.B providers
-List every provider that has a plugin installed.
+.B list
+List stored providers and masked usernames.
 .SH OPTIONS
 .TP
-.BR \-p " " { \fIkey\fR | \fB\- }
-API key source (see above).
+.BR \-p ", " \-\-provider " " \fIPROVIDER\fR
+Provider plugin name (e.g. \fBnamecheap.com\fR).
+.TP
+.BR \-u ", " \-\-username " " \fIUSERNAME\fR
+API username for the provider.
+.TP
+.BR \-k ", " \-\-api\-key " " \fB\-
+Read the API key from stdin. Omit \fB\-k\fR to be prompted.
+The key itself is NEVER accepted as a command\-line argument.
+.TP
+.BR \-v ", " \-\-verbose
+Verbose output.
 .TP
 .BR \-h ", " \-\-help
 Print the embedded usage text and exit.
+.SH EXAMPLES
+.PP
+Add credentials for \fBnamecheap.com\fR (interactive prompt):
+.RS
+.nf
+sudo fqdncredmgr add -p namecheap.com -u <username>
+.fi
+.RE
+.PP
+Add credentials non\-interactively from a shell variable (key never
+appears in argv or history):
+.RS
+.nf
+printf '%s\n' "$KEY" | sudo fqdncredmgr add -p namecheap.com -u <username> -k \-
+.fi
+.RE
+.PP
+Delete credentials:
+.RS
+.nf
+sudo fqdncredmgr delete -p namecheap.com
+.fi
+.RE
 .SH FILES
 .TP
 .I /var/lib/a2tools/creds.db

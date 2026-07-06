@@ -1,21 +1,34 @@
-Usage: fqdncredmgr <action> [provider] [username] [-p -] [-v]
+Usage: fqdncredmgr <action> [options]
+
+All arguments are named flags. Positional arguments are not accepted;
+PROVIDER must be passed via -p/--provider and USERNAME via -u/--username.
 
 Actions:
-  add <REGISTRAR> <username>        Set credentials (replaces existing if any)
-  update <REGISTRAR> <username>     Update existing credentials
-  delete <REGISTRAR>                Delete credentials for provider
-  list                              List stored providers and masked usernames
+  add         Set credentials (replaces existing if any)
+              Required: -p PROVIDER -u USERNAME
+  update      Update existing credentials
+              Required: -p PROVIDER -u USERNAME
+  delete      Delete credentials for a provider
+              Required: -p PROVIDER
+  list        List stored providers and masked usernames
 
 Options:
-  -p -          Read the API key from stdin (recommended for scripting;
-                keeps the secret out of the process list and shell history).
-                Example: printf '%s\n' "$KEY" | fqdncredmgr add namecheap.com user -p -
-  (omitted)     Prompt interactively with masked input.
-  -v            Verbose output.
+  -p, --provider PROVIDER     Provider plugin name (e.g. namecheap.com)
+  -u, --username USERNAME     API username for the provider
+  -k, --api-key -             Read the API key from stdin. The API key itself
+                              is NEVER accepted as a command-line argument:
+                              argv is visible to all local users via `ps` and
+                              lands in shell history. Omit -k to be prompted
+                              interactively (masked).
+  -v, --verbose               Verbose output.
+  -h, --help                  Show this help.
 
-Note: passing the API key itself as a command-line argument is not supported
-(argv is visible to all local users via `ps` and lands in shell history).
+Examples:
+  sudo fqdncredmgr add -p namecheap.com -u <username>
+  printf '%s\n' "$KEY" | sudo fqdncredmgr add -p namecheap.com -u <username> -k -
+  sudo fqdncredmgr list
+  sudo fqdncredmgr delete -p namecheap.com
 
 Notes:
-  - Each registrar can have only one set of credentials (one username).
-  - Credentials are stored in /var/lib/a2tools/creds.db (root-only, 0600).
+  Each provider can have only one set of credentials (one username).
+  Credentials are stored in /var/lib/a2tools/creds.db (root-only, 0600).

@@ -18,8 +18,6 @@ A2TOOLS_SELF_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 
 USAGE_FILE="$A2TOOLS_SHARE/usage/fqdncredmgr.txt"
 
-usage() { cat "$USAGE_FILE"; exit 1; }
-
 require_db() {
     if [ ! -f "$CREDS_DB_PATH" ]; then
         echo "Error: Credentials database $CREDS_DB_PATH not found. Reinstall a2tools to initialize it." >&2
@@ -92,21 +90,53 @@ mask_username() {
     fi
 }
 
-# --- argument parsing (order-independent -v, no word-splitting hacks) -------
-ARGS=()
-for arg in "$@"; do
-    if [ "$arg" = "-v" ]; then
-        VERBOSE=true
-    else
-        ARGS+=("$arg")
-    fi
+# --- argument parsing --------------------------------------------------------
+ACTION=""
+PROVIDER=""
+USERNAME=""
+KEY_FROM_STDIN=false
+VERBOSE=false
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            cat "$USAGE_FILE"
+            exit 0
+            ;;
+        -v|--verbose)
+            VERBOSE=true
+            shift
+            ;;
+        -p|--provider)
+            [ $# -ge 2 ] || { echo "Error: -p/--provider requires a value (use --help)" >&2; exit 1; }
+            PROVIDER="$2"; shift 2
+            ;;
+        -u|--username)
+            [ $# -ge 2 ] || { echo "Error: -u/--username requires a value (use --help)" >&2; exit 1; }
+            USERNAME="$2"; shift 2
+            ;;
+        -k|--api-key)
+            if [ $# -ge 2 ] && [ "$2" != "-" ]; then
+                echo "Error: API keys on the command line are not supported." >&2
+                echo "Use '-k -' to read the key from stdin, or omit -k to be prompted." >&2
+                exit 1
+            fi
+            KEY_FROM_STDIN=true
+            shift 2
+            ;;
+        *)
+            if [ -z "$ACTION" ]; then
+                ACTION="$1"
+            else
+                echo "Error: invalid argument '$1' (use --help)" >&2
+                exit 1
+            fi
+            shift
+            ;;
+    esac
 done
-set -- "${ARGS[@]}"
 
-[ $# -ge 1 ] || { echo "Error: Insufficient arguments" >&2; usage; }
-
-ACTION="$1"
-shift
+[ -n "$ACTION" ] || { echo "Error: No action specified (use --help)" >&2; exit 1; }
 
 case "$ACTION" in
     list)
@@ -119,34 +149,13 @@ case "$ACTION" in
         ;;
 
     add|update)
-        [ $# -ge 1 ] || { echo "Error: PROVIDER required" >&2; usage; }
-        PROVIDER="$1"; shift
+        [ -n "$PROVIDER" ] || { echo "Error: --provider is required (use --help)" >&2; exit 1; }
+        [ -n "$USERNAME" ] || { echo "Error: --username is required (use --help)" >&2; exit 1; }
         if ! validate_provider "$PROVIDER"; then
             echo "Error: Invalid provider '$PROVIDER'. Valid providers:" >&2
             list_providers >&2
             exit 1
         fi
-
-        API_KEY="" USERNAME="" KEY_FROM_STDIN=false
-        while [ $# -gt 0 ]; do
-            case "$1" in
-                -p)
-                    if [ "${2:-}" = "-" ]; then
-                        KEY_FROM_STDIN=true
-                    else
-                        echo "Error: API keys on the command line are not supported." >&2
-                        echo "Use '-p -' to read the key from stdin, or omit -p to be prompted." >&2
-                        exit 1
-                    fi
-                    shift 2
-                    ;;
-                *)
-                    [ -n "$USERNAME" ] && { echo "Error: Unexpected argument '$1'" >&2; usage; }
-                    USERNAME="$1"; shift
-                    ;;
-            esac
-        done
-        [ -n "$USERNAME" ] || { echo "Error: USERNAME required" >&2; usage; }
 
         require_db
 
@@ -176,8 +185,7 @@ case "$ACTION" in
         ;;
 
     delete)
-        [ $# -ge 1 ] || { echo "Error: PROVIDER required" >&2; usage; }
-        PROVIDER="$1"
+        [ -n "$PROVIDER" ] || { echo "Error: --provider is required (use --help)" >&2; exit 1; }
         if ! validate_provider "$PROVIDER"; then
             echo "Error: Invalid provider '$PROVIDER'. Valid providers:" >&2
             list_providers >&2
@@ -193,13 +201,8 @@ case "$ACTION" in
         fi
         ;;
 
-    -h|--help)
-        cat "$USAGE_FILE"
-        exit 0
-        ;;
-
     *)
-        echo "Error: Invalid action '$ACTION'" >&2
-        usage
+        echo "Error: Invalid action '$ACTION' (use --help)" >&2
+        exit 1
         ;;
 esac

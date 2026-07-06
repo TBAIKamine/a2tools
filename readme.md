@@ -17,6 +17,8 @@ in short: this script makes these commands available
 - `fqdnmgr` — FQDN manager to interact with the registrar (purchase a domain, set DNS records etc.)
 - `fqdncredmgr` — FQDN credentials manager
 
+All commands use **named flags only** (short `-d` or long `--fqdn`, etc., with a space separating the flag from its value). Positional arguments are not accepted anywhere; the FQDN is always supplied via `-d` / `--fqdn`, the registrar via `-r` / `--registrar`, and so on. See `man <command>` or `<command> --help` for the full flag list of each command.
+
 ## Notes
 
 - `a2sitemgr` integrates with the other tools and will call them when appropriate (for example, checking domain ownership or creating DNS records).
@@ -65,23 +67,26 @@ sudo apt purge a2tools
 additional providers may be added, PR are also welcome
 
 ## Basic usage
+All commands use named flags only. Positional arguments are not accepted
+anywhere; the FQDN is always supplied via `-d` / `--fqdn`, the registrar
+via `-r` / `--registrar`, and so on.
 #### 1. Add credentials:
 ```
-sudo fqdncredmgr add namecheap.com username
+sudo fqdncredmgr add -p namecheap.com -u username
 ```
-you will be prompted for the API key with masked input. For scripting, pipe the key over stdin with `-p -` (keeps it out of the process list and shell history):
+you will be prompted for the API key with masked input. For scripting, pipe the key over stdin with `-k -` (keeps it out of the process list and shell history):
 ```
-printf '%s\n' "$API_KEY" | sudo fqdncredmgr add namecheap.com username -p -
+printf '%s\n' "$API_KEY" | sudo fqdncredmgr add -p namecheap.com -u username -k -
 ```
 for full command usage options use `-h` or `--help`
 #### 2. Purchase a domain
 ```
-sudo fqdnmgr purchase example.com namecheap.com
+sudo fqdnmgr purchase -d example.com -r namecheap.com
 ```
 for full command usage options use `-h` or `--help`
 #### 3. Set necessary DNS records.
 ```
-sudo fqdnmgr setInitDNSRecords -d example1.com example2.com
+sudo fqdnmgr setInitDNSRecords -d example1.com -d example2.com
 #set for all of your domains associated with the registrar:
 sudo fqdnmgr setInitDNSRecords -r namecheap.com
 ```

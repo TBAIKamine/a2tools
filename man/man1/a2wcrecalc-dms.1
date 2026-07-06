@@ -1,9 +1,9 @@
-.TH A2WCRECALC\-DMS 1 "2026-07-05" "a2tools 1.0.0" "User Commands"
+.TH A2WCRECALC\-DMS 1 "2026-07-06" "a2tools 1.0.0" "User Commands"
 .SH NAME
 a2wcrecalc\-dms \- \fBa2wcrecalc\fR plus \fBdocker\-mailserver\fR mapping files
 .SH SYNOPSIS
 .B a2wcrecalc\-dms
-.RI [ wildcard\-domain ]
+.RB [ \-d " " \fIDMS_DIR\fR]
 .SH DESCRIPTION
 \fBa2wcrecalc\-dms\fR behaves exactly like \fBa2wcrecalc\fR(1) and then
 additionally generates the per\-domain mapping files used by
@@ -11,13 +11,22 @@ additionally generates the per\-domain mapping files used by
 to discover which virtual host each incoming connection should be
 routed to.
 .PP
-The \fBDMS_DIR\fR environment variable points to the
-\fBdocker\-mailserver\fR mount directory. If unset, it defaults to
+All arguments are named flags. The \fIdocker\-mailserver\fR directory
+is selected in this order: \fB\-d\fR / \fB\-\-dir\fR, then the
+\fBDMS_DIR\fR environment variable, then the built\-in default
 \fB/opt/compose/docker\-mailserver\fR.
+.SH OPTIONS
+.TP
+.BR \-d ", " \-\-dir " " \fIDMS_DIR\fR
+Path to the \fBdocker\-mailserver\fR mount directory.
+.TP
+.BR \-h ", " \-\-help
+Print the embedded usage text and exit.
 .SH ENVIRONMENT
 .TP
 .B DMS_DIR
-Path to the \fBdocker\-mailserver\fR mount directory.
+Fallback path to the \fBdocker\-mailserver\fR mount directory
+(overridden by \fB\-d\fR).
 .SH SEE ALSO
 .BR a2wcrecalc (1),
 .BR a2sitemgr (1)
