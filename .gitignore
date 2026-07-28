@@ -1,5 +1,6 @@
 *.code-workspace
-.vscode/*.code-workspace
+!.vscode/*.code-workspace
+!.a2tools.code-workspace
 debian/
 .DS_Store
 .AppleDouble
