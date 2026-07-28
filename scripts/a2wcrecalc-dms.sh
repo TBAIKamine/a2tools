@@ -48,8 +48,8 @@ else
     echo "DMS directory not found." >&2
     exit 1
 fi
-if [ ! -d "$DMS_DIR/docker-data/dms/config/" ]; then
-    echo "Config directory not found: $DMS_DIR/docker-data/dms/config/" >&2
+if [ ! -d "$DMS_DIR/config/" ]; then
+    echo "Config directory not found: $DMS_DIR/config/" >&2
     exit 1
 fi
 
@@ -97,7 +97,7 @@ for fqdn in "${!server_names[@]}"; do
 done
 
 # Save the SNI certificate map to the DMS config directory
-output_file="$DMS_DIR/docker-data/dms/config/sni_cert_map"
+output_file="$DMS_DIR/config/sni_cert_map"
 
 if [ -n "$sni_map_content" ]; then
     echo "$sni_map_content" > "$output_file"
@@ -138,7 +138,7 @@ for fqdn in "${!server_names[@]}"; do
 done
 
 # Save the Dovecot SNI configuration
-dovecot_output_file="$DMS_DIR/docker-data/dms/config/99-sni.conf"
+dovecot_output_file="$DMS_DIR/config/99-sni.conf"
 
 if [ -n "$dovecot_sni_content" ]; then
     echo "$dovecot_sni_content" > "$dovecot_output_file"
