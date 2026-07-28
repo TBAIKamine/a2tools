@@ -13,8 +13,10 @@ routed to.
 .PP
 All arguments are named flags. The \fIdocker\-mailserver\fR directory
 is selected in this order: \fB\-d\fR / \fB\-\-dir\fR, then the
-\fBDMS_DIR\fR environment variable, then the built\-in default
-\fB/opt/compose/docker\-mailserver\fR.
+\fBDMS_DIR\fR environment variable, then the value of \fBDMS_DIR\fR
+read from \fB/etc/a2tools/a2tools.conf\fR (or any
+\fI*.conf\fR under \fB/etc/a2tools/a2tools.conf.d/\fR), and finally
+the built\-in default \fB/opt/compose/docker\-mailserver\fR.
 .SH OPTIONS
 .TP
 .BR \-d ", " \-\-dir " " \fIDMS_DIR\fR
@@ -26,7 +28,9 @@ Print the embedded usage text and exit.
 .TP
 .B DMS_DIR
 Fallback path to the \fBdocker\-mailserver\fR mount directory
-(overridden by \fB\-d\fR).
+(overridden by \fB\-d\fR; can also be set persistently in
+\fB/etc/a2tools/a2tools.conf\fR or any file under
+\fB/etc/a2tools/a2tools.conf.d/\fR).
 .SH SEE ALSO
 .BR a2wcrecalc (1),
 .BR a2sitemgr (1)

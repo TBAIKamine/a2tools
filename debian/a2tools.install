@@ -1,0 +1,2 @@
+scripts/share/etc/a2tools/a2tools.conf.d/00-defaults.conf /etc/a2tools/a2tools.conf.d/00-defaults.conf
+scripts/share/etc/a2tools/a2tools.conf.example      /etc/a2tools/a2tools.conf.example

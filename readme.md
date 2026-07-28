@@ -19,6 +19,27 @@ in short: this script makes these commands available
 
 All commands use **named flags only** (short `-d` or long `--fqdn`, etc., with a space separating the flag from its value). Positional arguments are not accepted anywhere; the FQDN is always supplied via `-d` / `--fqdn`, the registrar via `-r` / `--registrar`, and so on. See `man <command>` or `<command> --help` for the full flag list of each command.
 
+## Configuration
+
+All a2tools commands read a two-tier, upgrade-safe config:
+
+| File | Owner | Survives `apt upgrade`? | Purpose |
+| --- | --- | --- | --- |
+| `/etc/a2tools/a2tools.conf` | user (dpkg conffile) | yes | Local overrides — loaded first, so values here win. |
+| `/etc/a2tools/a2tools.conf.d/*.conf` | mixed | each file: yes if local, no if shipped | Modular drop-ins, loaded in lexicographic order. The shipped default lives in `00-defaults.conf`; create e.g. `99-local.conf` to override without editing any package-owned file. |
+
+When run from the repo (no install), the loader falls back to `scripts/share/etc/a2tools/` so dev workflows still pick up the defaults.
+
+### Setting the docker-mailserver mount directory
+
+Edit `/etc/a2tools/a2tools.conf` and set, for example:
+
+```sh
+DMS_DIR="/srv/docker/docker-mailserver"
+```
+
+Or create `/etc/a2tools/a2tools.conf.d/99-local.conf` with the same `DMS_DIR="…"` line.
+
 ## Notes
 
 - `a2sitemgr` integrates with the other tools and will call them when appropriate (for example, checking domain ownership or creating DNS records).
@@ -28,7 +49,7 @@ All commands use **named flags only** (short `-d` or long `--fqdn`, etc., with a
   - `a2wcrecalc` — Recalculates Apache site configuration files to update wildcard-subdomain configurations. This is useful to enable/disable wildcard subdomains across existing vhosts.
   - `a2wcrecalc-dms` — Similar to `a2wcrecalc`, but additionally generates mapping files used by ([`docker-mailserver`](https://github.com/docker-mailserver/docker-mailserver)).
 
-  Note: set the environment variable `DMS_DIR` to point to your docker-mailserver mount directory; it defaults to `/opt/compose/docker-mailserver` if not set.
+  Note: the docker-mailserver mount directory is resolved in this order: the `-d` / `--dir` flag, then the `DMS_DIR` environment variable, then the value of `DMS_DIR` from `/etc/a2tools/a2tools.conf` (or any file in `/etc/a2tools/a2tools.conf.d/`), and finally the built-in default `/opt/compose/docker-mailserver`. See the **Configuration** section below.
 
 ## Prerequisites
 

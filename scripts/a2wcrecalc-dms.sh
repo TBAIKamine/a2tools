@@ -3,6 +3,12 @@
 # -d / --dir selects the docker-mailserver directory (overrides $DMS_DIR and
 # the built-in /opt/compose/docker-mailserver default).
 
+# Pick up a2tools.conf / a2tools.conf.d/*.conf so the user can set DMS_DIR
+# (or other knobs) in /etc/a2tools/ without touching this script.
+A2TOOLS_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=lib/common.sh
+. "$A2TOOLS_ROOT/lib/common.sh"
+
 DMS_DIR_CLI=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -16,7 +22,8 @@ Usage: a2wcrecalc-dms -d DMS_DIR
 
 Recalculate Apache configs and regenerate docker-mailserver SNI mapping files.
 DMS_DIR resolution order: -d/--dir flag, then \$DMS_DIR env, then
-/opt/compose/docker-mailserver.
+DMS_DIR from /etc/a2tools/a2tools.conf (or *.conf under
+/etc/a2tools/a2tools.conf.d/), then /opt/compose/docker-mailserver.
 
 Options:
   -d, --dir DMS_DIR   Path to the docker-mailserver mount directory
@@ -34,7 +41,7 @@ done
 if [ -n "$DMS_DIR_CLI" ] && [ -d "$DMS_DIR_CLI" ]; then
     DMS_DIR="$DMS_DIR_CLI"
 elif [ -n "${DMS_DIR:-}" ] && [ -d "$DMS_DIR" ]; then
-    : # honour the env var the caller already set
+    : # honour the env var or the value loaded from /etc/a2tools/a2tools.conf
 elif [ -d "/opt/compose/docker-mailserver" ]; then
     DMS_DIR="/opt/compose/docker-mailserver"
 else

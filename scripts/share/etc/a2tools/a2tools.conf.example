@@ -1,0 +1,12 @@
+# /etc/a2tools/a2tools.conf
+#
+# Local a2tools overrides. This file is NOT touched by `apt upgrade` — dpkg's
+# conffile mechanism preserves user edits across package upgrades. It is
+# loaded AFTER /etc/a2tools/a2tools.conf.d/*.conf, so values you set here
+# win over every drop-in (including the shipped 00-defaults.conf).
+#
+# Uncomment and edit any line below, or simply add new ones in the form
+# `KEY="value"` (or `KEY=value` for unquoted paths).
+#
+# Example: point a2wcrecalc-dms at a non-default docker-mailserver mount.
+# DMS_DIR="/srv/docker/docker-mailserver"

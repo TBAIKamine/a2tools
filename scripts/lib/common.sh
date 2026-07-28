@@ -42,6 +42,70 @@ LOG_FILE="$A2TOOLS_LOG_DIR/fqdnmgr.log"
 A2TOOLS_PROVIDER_DIRS=("$A2TOOLS_ETC/providers" "$A2TOOLS_ROOT/providers")
 
 # ---------------------------------------------------------------------------
+# Configuration files
+# ---------------------------------------------------------------------------
+# Two-tier, upgrade-safe configuration:
+#   1. /etc/a2tools/a2tools.conf           — user conffile, preserved by dpkg
+#                                            on upgrade; loaded FIRST so its
+#                                            values always win.
+#   2. /etc/a2tools/a2tools.conf.d/*.conf  — modular drop-ins, loaded in
+#                                            lexicographic order. The shipped
+#                                            default lives at
+#                                            /etc/a2tools/a2tools.conf.d/00-defaults.conf
+#                                            and is overwritten on every apt
+#                                            upgrade. Local overrides go in a
+#                                            file with a higher numeric prefix
+#                                            (e.g. 99-local.conf).
+#
+# When a2tools is run straight from the repo (no install), the loader falls
+# back to <repo>/share/etc/a2tools/* so `shellcheck` and dev workflows still
+# pick up the defaults.
+A2TOOLS_CONF_FILE="${A2TOOLS_CONF_FILE:-$A2TOOLS_ETC/a2tools.conf}"
+A2TOOLS_CONF_D="${A2TOOLS_CONF_D:-$A2TOOLS_ETC/a2tools.conf.d}"
+# When run from the repo (no install) and the /etc paths do not exist, fall
+# back to the in-tree defaults so dev workflows still work.
+if [ ! -e "$A2TOOLS_CONF_FILE" ] && [ -f "$A2TOOLS_ROOT/share/etc/a2tools/a2tools.conf.example" ]; then
+    A2TOOLS_CONF_FILE="$A2TOOLS_ROOT/share/etc/a2tools/a2tools.conf.example"
+fi
+if [ ! -d "$A2TOOLS_CONF_D" ] && [ -d "$A2TOOLS_ROOT/share/etc/a2tools/a2tools.conf.d" ]; then
+    A2TOOLS_CONF_D="$A2TOOLS_ROOT/share/etc/a2tools/a2tools.conf.d"
+fi
+
+# load_config: source every drop-in in /etc/a2tools/a2tools.conf.d/ in
+# lexicographic order, then the user conffile LAST so it always wins.
+# Precedence (lowest -> highest):
+#   shipped /etc/a2tools/a2tools.conf.d/00-defaults.conf
+#   other drop-ins in numeric order (e.g. 10-foo.conf, 20-bar.conf)
+#   /etc/a2tools/a2tools.conf  (dpkg conffile, preserved across upgrades)
+#
+# This matches the Debian/Ubuntu convention for /etc drop-in directories:
+# local overrides live in a single file and outrank any modular file.
+#
+# Idempotent: safe to call multiple times; each call re-sources from disk so
+# edits to the config take effect on the next script invocation.
+load_config() {
+    # 1) drop-ins, sorted ascending; skip files we cannot read for safety
+    if [ -d "$A2TOOLS_CONF_D" ]; then
+        local f
+        while IFS= read -r f; do
+            [ -r "$f" ] || continue
+            # shellcheck disable=SC1090
+            . "$f"
+        done < <(find "$A2TOOLS_CONF_D" -maxdepth 1 -type f -name '*.conf' | LC_ALL=C sort)
+    fi
+
+    # 2) user conffile last (preserved across upgrades by dpkg) so its
+    #    values always win.
+    if [ -f "$A2TOOLS_CONF_FILE" ]; then
+        # shellcheck disable=SC1090
+        . "$A2TOOLS_CONF_FILE"
+    fi
+}
+
+# Load once at source time so every entry script picks up the values.
+load_config
+
+# ---------------------------------------------------------------------------
 # User-facing output channel (FD 3)
 # ---------------------------------------------------------------------------
 # Interactive progress/status output goes to FD 3:

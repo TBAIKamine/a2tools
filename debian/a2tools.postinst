@@ -1,0 +1,26 @@
+#!/bin/sh
+# postinst for a2tools
+#
+# On first install, seed /etc/a2tools/a2tools.conf from the shipped
+# a2tools.conf.example so dpkg immediately knows it is a conffile and the
+# user has a starting point to edit. Re-runs are no-ops (the file is left
+# alone, conffile already registered).
+
+set -e
+
+CONF_DIR=/etc/a2tools
+CONF_FILE=$CONF_DIR/a2tools.conf
+EXAMPLE=$CONF_DIR/a2tools.conf.example
+
+# Ensure the layout exists; debian/dirs creates the directories on install.
+mkdir -p "$CONF_DIR/a2tools.conf.d"
+
+# Seed on first install only. If the user already has a2tools.conf (e.g.
+# purging+reinstalling or migrating from a manual setup), leave it alone.
+if [ ! -e "$CONF_FILE" ] && [ -f "$EXAMPLE" ]; then
+    cp "$EXAMPLE" "$CONF_FILE"
+fi
+
+#DEBHELPER#
+
+exit 0

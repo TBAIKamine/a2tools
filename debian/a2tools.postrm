@@ -1,0 +1,18 @@
+#!/bin/sh
+# postrm for a2tools
+#
+# On purge, drop the entire /etc/a2tools tree so a fresh install starts
+# clean. On remove (without purge), leave it in place so a reinstall keeps
+# the user's overrides.
+
+set -e
+
+case "$1" in
+    purge)
+        rm -rf /etc/a2tools
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0
